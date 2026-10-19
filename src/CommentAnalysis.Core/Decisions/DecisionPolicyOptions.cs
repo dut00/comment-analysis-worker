@@ -19,8 +19,11 @@ public sealed class DecisionPolicyOptions
     /// <summary>Minimum confidence to approve an <c>Acceptable</c> prediction.</summary>
     public double ApproveThreshold { get; set; } = 0.85;
 
-    /// <summary>Minimum confidence to reject an <c>Unacceptable</c> prediction.</summary>
-    public double RejectThreshold { get; set; } = 0.90;
+    /// <summary>
+    /// Minimum confidence to reject an <c>Unacceptable</c> prediction. 0.85 was chosen from the quality report
+    /// (docs/quality): at 0.90 most insults, threats and spam went to manual review at 0.87–0.90.
+    /// </summary>
+    public double RejectThreshold { get; set; } = 0.85;
 
     /// <summary>
     /// The highest <see cref="Models.ModerationSignals.Toxicity"/> that still allows an approval. The default lets

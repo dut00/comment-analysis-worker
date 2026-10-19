@@ -19,8 +19,8 @@ public enum ReviewReason
     PersonalData,
 
     /// <summary>
-    /// The comment is longer than the model can evaluate in time (<c>Consumer:MaxContentLength</c>), so it was not
-    /// evaluated at all.
+    /// The comment is longer than <c>Consumer:MaxContentLength</c> (far beyond the expected comment length), so it was
+    /// not sent to the model.
     /// </summary>
     TooLong,
 }

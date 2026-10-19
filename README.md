@@ -29,5 +29,5 @@ basal-serve --model "C:\Users\Kuba\.lmstudio\models\Remek\basal-2.0-mini-GGUF" -
 - `--name basal-2.0-mini` matters: the server reports this name in every response, and the worker treats any other name as another model (the comments wait). Without it, `basal-serve` on Windows reports the whole `--model` path.
 - The server listens on all interfaces (`0.0.0.0:1234`), so the worker in compose can reach it.
 - Check it with `curl http://localhost:1234/v1/models` (lists `basal-2.0-mini`) and `curl http://localhost:1234/health`.
-- Expect about 80–120 s per short comment (four questions) and about 200 s for 1000 characters. The server handles one request at a time and finishes a request even after the client gave up, so Development and compose limit comments to 1000 characters and prefetch one message.
+- Expect about 11 s per short comment (four questions), about 19 s for 2500 characters and about 52 s for 10 000 (the eager mode without `--mode gguf` was 7–20 times slower). The server handles one request at a time and finishes a request even after the client gave up, so Development and compose prefetch one message. Comments over `Consumer:MaxContentLength` (1000 characters; comments are expected to have at most 280) go to manual review without the model.
 - Without the model, set `Model__Provider: Static` in compose (or `Model:Provider` in Development settings).

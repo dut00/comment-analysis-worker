@@ -30,10 +30,11 @@ public sealed class ConsumerOptions
     public int MaxMessageBytes { get; set; } = 64 * 1024;
 
     /// <summary>
-    /// Longest accepted comment content in characters; longer comments are dead-lettered instead of being sent
-    /// to the model, whose cost grows with the input size.
+    /// Longest comment content in characters that is sent to the model, whose cost grows with the input size; longer
+    /// comments go to manual review without being evaluated. Comments are expected to have at most 280 characters
+    /// (as on X), so the default leaves a wide margin.
     /// </summary>
-    public int MaxContentLength { get; set; } = 10_000;
+    public int MaxContentLength { get; set; } = 1000;
 
     /// <summary>
     /// How many times a message whose processing failed is retried before it is dead-lettered. Retries are

@@ -52,9 +52,10 @@ public class DecisionPolicyTests
     {
         var policy = new DecisionPolicy(new DecisionPolicyOptions());
 
+        Assert.Equal(Decision.ManualReview, policy.Decide(new ModelPrediction(ContentLabel.Acceptable, 0.849)).Decision);
         Assert.Equal(Decision.Approve, policy.Decide(new ModelPrediction(ContentLabel.Acceptable, 0.85)).Decision);
-        Assert.Equal(Decision.ManualReview, policy.Decide(new ModelPrediction(ContentLabel.Unacceptable, 0.89)).Decision);
-        Assert.Equal(Decision.Reject, policy.Decide(new ModelPrediction(ContentLabel.Unacceptable, 0.90)).Decision);
+        Assert.Equal(Decision.ManualReview, policy.Decide(new ModelPrediction(ContentLabel.Unacceptable, 0.849)).Decision);
+        Assert.Equal(Decision.Reject, policy.Decide(new ModelPrediction(ContentLabel.Unacceptable, 0.85)).Decision);
     }
 
     [Fact]

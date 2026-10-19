@@ -71,11 +71,11 @@ foreach (var sample in samples.Where(sample => results.All(result => result.Id !
     }
 
     results.Add(result);
-    File.WriteAllText(resultsPath, JsonSerializer.Serialize(results, json));
+    File.WriteAllText(resultsPath, JsonSerializer.Serialize(results, json).ReplaceLineEndings("\n"));
     Console.WriteLine(FormattableString.Invariant($"{sample.Id}: {result.Label} {result.Confidence:F3} in {result.Seconds:F0} s {result.Error}"));
 }
 
-File.WriteAllText(args[2], Report(samples, results));
+File.WriteAllText(args[2], Report(samples, results).ReplaceLineEndings("\n"));
 Console.WriteLine($"Report: {args[2]}");
 return 0;
 
@@ -135,7 +135,7 @@ static string Report(IReadOnlyList<Sample> samples, IReadOnlyList<Result> result
 
         var decision = Decide(result, defaults);
         var mark = Matches(sample.Expected, decision.Decision) ? string.Empty : " ✗";
-        report.AppendLine(CultureInfo.InvariantCulture, $"| {sample.Id} | {sample.Category} | {sample.Expected} | {decision.Decision}{mark} | {string.Join(", ", decision.ReviewReasons)} | {result.Label} | {result.Confidence:F3} | {result.Toxicity:F2} | {result.Spam:F2} | {result.PersonalData:F2} | {result.Seconds:F0} |");
+        report.AppendLine(CultureInfo.InvariantCulture, $"| {sample.Id} | {sample.Category} | {sample.Expected} | {decision.Decision}{mark} | {string.Join(", ", decision.ReviewReasons)} | {result.Label} | {result.Confidence:F4} | {result.Toxicity:F2} | {result.Spam:F2} | {result.PersonalData:F2} | {result.Seconds:F0} |");
     }
 
     report.AppendLine();
