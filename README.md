@@ -15,3 +15,18 @@ A .NET 10 worker that consumes newly created user comments from RabbitMQ and eva
 dotnet build
 dotnet test
 ```
+
+## Decision model
+
+The worker queries a decision model through the TypeSafe-compatible `POST /v1/systemone` API (`Model:Provider=SystemOne`). Development settings and compose expect `basal-2.0-mini` on port 1234 of the host (compose reaches it through `host.docker.internal`).
+
+The configuration that works best on the author's laptop (CPU) runs the Q8_0 GGUF build with `basal-serve`:
+
+```powershell
+basal-serve --model "C:\Users\Kuba\.lmstudio\models\Remek\basal-2.0-mini-GGUF" --mode gguf --gguf "C:\Users\Kuba\.lmstudio\models\Remek\basal-2.0-mini-GGUF\basal-2.0-mini-Q8_0.gguf" --port 1234
+```
+
+- The server listens on all interfaces (`0.0.0.0:1234`), so the worker in compose can reach it.
+- Check it with `curl http://localhost:1234/v1/models` (lists `basal-2.0-mini`) and `curl http://localhost:1234/health`.
+- Expect about 80–120 s per short comment (four questions) and about 200 s for 1000 characters. The server handles one request at a time and finishes a request even after the client gave up, so Development and compose limit comments to 1000 characters and prefetch one message.
+- Without the model, set `Model__Provider: Static` in compose (or `Model:Provider` in Development settings).

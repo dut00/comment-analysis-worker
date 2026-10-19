@@ -27,6 +27,7 @@ dotnet format --verify-no-changes              # check style against .editorconf
 dotnet tool restore                            # once: installs dotnet-ef from dotnet-tools.json
 dotnet ef migrations add <Name> --project src/CommentAnalysis.Infrastructure --startup-project src/CommentAnalysis.Infrastructure --output-dir Persistence/Migrations
 dotnet run --project src/CommentAnalysis.Worker  # local run on http://localhost:7461 (same port as in the container; deliberately not 8080/5000). Needs Postgres (localhost:5433) and RabbitMQ (localhost:5672) from compose
+basal-serve --model "C:\Users\Kuba\.lmstudio\models\Remek\basal-2.0-mini-GGUF" --mode gguf --gguf "C:\Users\Kuba\.lmstudio\models\Remek\basal-2.0-mini-GGUF\basal-2.0-mini-Q8_0.gguf" --port 1234  # the decision model for Development and compose (best on the author's laptop; see README)
 docker compose up --build -d                   # run in containers (worker http://localhost:7461, RabbitMQ UI http://localhost:15672 guest/guest, Postgres localhost:5433)
 docker compose down -v                         # reset local data; needed after changing RabbitMQ queue arguments (PRECONDITION_FAILED)
 ```

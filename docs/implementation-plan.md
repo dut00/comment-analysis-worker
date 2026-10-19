@@ -292,7 +292,7 @@ Deferred: the default model is the `/v1/systemone` decision model (phase S). Kep
 ---
 
 ## Verification (end-to-end, after S3)
-1. Start the `/v1/systemone` server with `basal-2.0-mini` on port 1234, listening beyond localhost (the container reaches it through `host.docker.internal`).
+1. Start the `/v1/systemone` server with `basal-2.0-mini` on port 1234, listening beyond localhost (the container reaches it through `host.docker.internal`). On the author's laptop the best configuration is `basal-serve` with the Q8_0 GGUF build – the exact command is in the README ("Decision model").
 2. `docker compose up --build`
 3. RabbitMQ UI at http://localhost:15672: publish a `CommentCreated` JSON message to the `comments` exchange with routing key `comment.created`.
 4. `SELECT decision, review_reasons, confidence, toxicity, spam_probability, personal_data_probability, model_version FROM comment_analyses;` shows the decision with its reasons, the signals and the model version.
