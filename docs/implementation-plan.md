@@ -118,6 +118,8 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 **D2. Consumer – happy path**
 - `CommentCreatedConsumer` as a `BackgroundService`: manual ack, configurable prefetch, a new DI scope per message, and a log scope carrying `commentId`. It deserializes the message, skips it if already analyzed, analyzes it, saves the result and then acks.
+- Graceful shutdown: on stop, cancel the consumer (no new deliveries), let the in-flight message finish and ack, then close the channel. Align timeouts so the host finishes before the orchestrator kills it: `HostOptions.ShutdownTimeout` (configurable, e.g. 25 s) < compose `stop_grace_period` (e.g. 30 s) < k8s `terminationGracePeriodSeconds`. Docker's default grace period is only 10 s, while the .NET host waits up to 30 s by default.
+- Test: stopping the host while a message is being processed still produces the DB row and acks the message.
 - Integration test (Postgres + RabbitMQ containers, fake model): publishing a message produces a DB row.
 
 **D3. Failure handling**
@@ -169,7 +171,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - Metrics through `System.Diagnostics.Metrics`: decisions by type, inference duration, processing failures. Optional OpenTelemetry export (OTLP) behind config.
 
 **H2. Graceful shutdown and scaling**
-- Stop consuming, finish the in-flight messages, then close the channel. Run compose with 2 worker replicas and confirm there are no duplicates and no lost events.
+- Shutdown behaviour itself is implemented in D2; here verify it under load: `docker compose stop` during processing, and run compose with 2 worker replicas and confirm there are no duplicates and no lost events.
 
 **H3. Documentation**
 - README: architecture, configuration reference, running locally, sending a test comment, swapping models, and the production migration bundle.
