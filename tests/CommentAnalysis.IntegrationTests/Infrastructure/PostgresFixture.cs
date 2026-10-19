@@ -1,5 +1,6 @@
 using CommentAnalysis.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Testcontainers.PostgreSql;
 
 namespace CommentAnalysis.IntegrationTests.Infrastructure;
@@ -24,6 +25,9 @@ public sealed class PostgresFixture : IAsyncLifetime
 
     public Task DisposeAsync() => _container.DisposeAsync().AsTask();
 
-    public AnalysisDbContext CreateContext() =>
-        new(new DbContextOptionsBuilder<AnalysisDbContext>().UseAnalysisDatabase(ConnectionString).Options);
+    public AnalysisDbContext CreateContext(params IInterceptor[] interceptors) =>
+        new(new DbContextOptionsBuilder<AnalysisDbContext>()
+            .UseAnalysisDatabase(ConnectionString)
+            .AddInterceptors(interceptors)
+            .Options);
 }

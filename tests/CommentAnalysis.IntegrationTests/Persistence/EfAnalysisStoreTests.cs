@@ -1,5 +1,7 @@
+using System.Text;
 using CommentAnalysis.Core.Analysis;
 using CommentAnalysis.Core.Decisions;
+using CommentAnalysis.Core.Messages;
 using CommentAnalysis.Core.Models;
 using CommentAnalysis.Infrastructure.Persistence;
 using CommentAnalysis.IntegrationTests.Infrastructure;
@@ -41,6 +43,42 @@ public class EfAnalysisStoreTests(PostgresFixture postgres)
     }
 
     [Fact]
+    public async Task SaveAsync_StoresCommentAnalyzedInTheOutbox()
+    {
+        var commentId = Guid.NewGuid();
+        var postId = Guid.NewGuid();
+        var result = CreateResult(Model);
+
+        await using (var context = postgres.CreateContext())
+        {
+            await new EfAnalysisStore(context).SaveAsync(commentId, postId, result, CancellationToken.None);
+        }
+
+        var message = Assert.Single(await GetOutboxMessagesAsync(commentId));
+        Assert.Equal(CommentAnalyzed.MessageType, message.Type);
+        Assert.Null(message.PublishedAt);
+        Assert.Equal(result.AnalyzedAt, message.CreatedAt);
+        Assert.Equal(
+            CommentAnalyzed.From(commentId, postId, result),
+            MessageSerializer.Deserialize<CommentAnalyzed>(Encoding.UTF8.GetBytes(message.Payload)));
+    }
+
+    [Fact]
+    public async Task SaveAsync_StoresNeitherRow_WhenTheTransactionFails()
+    {
+        var commentId = Guid.NewGuid();
+
+        await using (var context = postgres.CreateContext(new FailAfterOutboxInsertInterceptor()))
+        {
+            await Assert.ThrowsAsync<DbUpdateException>(() =>
+                new EfAnalysisStore(context).SaveAsync(commentId, Guid.NewGuid(), CreateResult(Model), CancellationToken.None));
+        }
+
+        Assert.Equal(0, await CountRowsAsync(commentId));
+        Assert.Empty(await GetOutboxMessagesAsync(commentId));
+    }
+
+    [Fact]
     public async Task ExistsAsync_IsTrueOnlyForSameCommentAndModelVersion()
     {
         var commentId = Guid.NewGuid();
@@ -76,6 +114,16 @@ public class EfAnalysisStoreTests(PostgresFixture postgres)
         }
 
         Assert.Equal(1, await CountRowsAsync(commentId));
+        Assert.Single(await GetOutboxMessagesAsync(commentId));
+    }
+
+    private async Task<List<OutboxMessageEntity>> GetOutboxMessagesAsync(Guid commentId)
+    {
+        await using var context = postgres.CreateContext();
+        return await context.OutboxMessages
+            .FromSql($"SELECT * FROM outbox_messages WHERE payload ->> 'commentId' = {commentId.ToString()}")
+            .AsNoTracking()
+            .ToListAsync();
     }
 
     [Fact]
