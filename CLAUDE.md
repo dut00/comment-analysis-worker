@@ -23,7 +23,9 @@ dotnet test tests/CommentAnalysis.Core.Tests   # one project
 dotnet test --filter "FullyQualifiedName~DecisionPolicyTests"            # one class
 dotnet test --filter "FullyQualifiedName=Namespace.Class.Method"         # one test
 dotnet format --verify-no-changes              # check style against .editorconfig
-dotnet run --project src/CommentAnalysis.Worker  # local run on http://localhost:5080 (8080 is reserved on the dev machine; containers use 8080)
+dotnet tool restore                            # once: installs dotnet-ef from dotnet-tools.json
+dotnet ef migrations add <Name> --project src/CommentAnalysis.Infrastructure --startup-project src/CommentAnalysis.Infrastructure --output-dir Persistence/Migrations
+dotnet run --project src/CommentAnalysis.Worker  # local run on http://localhost:5080 (8080 is taken on the dev machine; containers use 8080). Needs Postgres from compose on localhost:5433
 docker compose up --build -d                   # run in containers (worker on http://localhost:5080)
 ```
 

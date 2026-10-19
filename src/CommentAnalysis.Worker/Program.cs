@@ -9,6 +9,7 @@ if (HealthCheckCommand.IsRequested(args))
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddCommentAnalysis(builder.Configuration);
+builder.Services.AddCommentAnalysisPersistence(builder.Configuration);
 builder.Services.AddHealthChecks();
 
 var app = builder.Build();

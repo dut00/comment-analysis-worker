@@ -1,6 +1,24 @@
 name: comment-analysis
 
 services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: comment_analysis
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      # Host port 5433 to avoid clashing with a locally running PostgreSQL on 5432.
+      - "5433:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d comment_analysis"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
   worker:
     build:
       context: .
@@ -8,7 +26,15 @@ services:
     image: comment-analysis-worker:local
     environment:
       Model__Provider: Static
+      Database__ConnectionString: Host=postgres;Port=5432;Database=comment_analysis;Username=postgres;Password=postgres
+      Database__MigrateOnStartup: "true"
     ports:
-      # Host port 5080: 8080 is often reserved on Windows (Hyper-V excluded port ranges).
+      # Host port 5080: 8080 is often taken on developer machines.
       - "5080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  postgres-data:

@@ -1,8 +1,7 @@
 using System.Net;
 using CommentAnalysis.Core.Analysis;
 using CommentAnalysis.Core.Decisions;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Mvc.Testing;
+using CommentAnalysis.IntegrationTests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
@@ -13,7 +12,7 @@ public class WorkerHostTests
     [Fact]
     public async Task LivenessEndpoint_ReturnsOk()
     {
-        await using var factory = new WebApplicationFactory<Program>();
+        await using var factory = new WorkerFactory();
         using var client = factory.CreateClient();
 
         var response = await client.GetAsync(new Uri("/health/live", UriKind.Relative));
@@ -24,7 +23,7 @@ public class WorkerHostTests
     [Fact]
     public async Task Analyzer_UsesStaticModelFromConfiguration()
     {
-        await using var factory = CreateFactory(
+        await using var factory = new WorkerFactory(
             ("Model:Static:Label", "Unacceptable"),
             ("Model:Static:Confidence", "0.95"),
             ("Model:Static:Version", "2.0.0"));
@@ -41,21 +40,13 @@ public class WorkerHostTests
     [InlineData("DecisionPolicy:ApproveThreshold", "0.3", "DecisionPolicy:ApproveThreshold")]
     [InlineData("Model:Provider", "", "Model:Provider is required")]
     [InlineData("Model:Static:Confidence", "1.5", "Model:Static:Confidence")]
+    [InlineData("Database:ConnectionString", "", "Database:ConnectionString is required")]
     public async Task Startup_Fails_WhenConfigurationIsInvalid(string key, string value, string expectedMessage)
     {
-        await using var factory = CreateFactory((key, value));
+        await using var factory = new WorkerFactory((key, value));
 
         var exception = Assert.Throws<OptionsValidationException>(() => factory.CreateClient());
 
         Assert.Contains(expectedMessage, exception.Message, StringComparison.Ordinal);
     }
-
-    private static WebApplicationFactory<Program> CreateFactory(params (string Key, string Value)[] settings) =>
-        new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
-        {
-            foreach (var (key, value) in settings)
-            {
-                builder.UseSetting(key, value);
-            }
-        });
 }

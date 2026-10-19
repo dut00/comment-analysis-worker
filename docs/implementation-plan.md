@@ -98,9 +98,11 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ### Phase C – Persistence (PostgreSQL)
 
-**C1. DbContext and initial migration**
+**C1. DbContext and initial migration** `[x]`
 - EF Core 10 + Npgsql, `AnalysisDbContext`, and the `comment_analyses` table with `UNIQUE(comment_id, model_version)`.
 - First migration, applied at startup when `Database:MigrateOnStartup=true`. Postgres is added to compose.
+- Columns: `id, comment_id, post_id, decision, label, confidence, probabilities (jsonb), model_name, model_version, analyzed_at, duration_ms`, plus a check constraint `confidence` ∈ [0, 1]. Snake_case names are configured explicitly (no naming-convention package). `dotnet ef` is a local tool (`dotnet-tools.json`) and uses a design-time factory, so it does not start the worker host. Migrations are excluded from analyzers via `.editorconfig`. On a brand-new database EF logs one "Failed executing DbCommand" error while it creates its history table; this is expected EF behaviour.
+- Test: the EF model has no changes missing from migrations (`HasPendingModelChanges`).
 - Done when: the worker in compose creates the table.
 
 **C2. Analysis store and idempotency**
