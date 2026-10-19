@@ -1,7 +1,9 @@
 using System.Globalization;
 using System.Text;
+using CommentAnalysis.Infrastructure;
 using CommentAnalysis.Infrastructure.Messaging;
 using CommentAnalysis.IntegrationTests.Infrastructure;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using RabbitMQ.Client;
 
@@ -13,10 +15,10 @@ public class RabbitMqTopologyTests(RabbitMqFixture rabbitMq)
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(30);
 
     [Fact]
-    public async Task Worker_DeclaresQueues_AndRoutesCommentCreatedToInputQueue()
+    public async Task Initializer_DeclaresQueues_AndRoutesCommentCreatedToInputQueue()
     {
         var topology = RabbitMqFixture.CreateTopologySettings();
-        await using var worker = await StartWorkerAsync(topology);
+        await using var messaging = await StartMessagingAsync(topology);
 
         await using var connection = await rabbitMq.ConnectAsync();
         await using var channel = await connection.CreateChannelAsync();
@@ -32,7 +34,7 @@ public class RabbitMqTopologyTests(RabbitMqFixture rabbitMq)
     public async Task RejectedMessage_IsDeadLetteredToDlq()
     {
         var topology = RabbitMqFixture.CreateTopologySettings();
-        await using var worker = await StartWorkerAsync(topology);
+        await using var messaging = await StartMessagingAsync(topology);
 
         await using var connection = await rabbitMq.ConnectAsync();
         await using var channel = await connection.CreateChannelAsync();
@@ -52,7 +54,7 @@ public class RabbitMqTopologyTests(RabbitMqFixture rabbitMq)
     {
         const int deliveryLimit = 2;
         var topology = RabbitMqFixture.CreateTopologySettings();
-        await using var worker = await StartWorkerAsync(topology, ("RabbitMq:DeliveryLimit", deliveryLimit.ToString(CultureInfo.InvariantCulture)));
+        await using var messaging = await StartMessagingAsync(topology, ("RabbitMq:DeliveryLimit", deliveryLimit.ToString(CultureInfo.InvariantCulture)));
 
         await using var connection = await rabbitMq.ConnectAsync();
         await using (var publisher = await connection.CreateChannelAsync())
@@ -97,36 +99,57 @@ public class RabbitMqTopologyTests(RabbitMqFixture rabbitMq)
             await channel.QueueDeclareAsync(topology.InputQueue, durable: true, exclusive: false, autoDelete: false);
         }
 
-        await using var factory = new WorkerFactory(rabbitMq.WorkerSettings(topology));
-        var initializer = factory.Services.GetRequiredService<RabbitMqTopologyInitializer>();
+        await using var messaging = await StartMessagingAsync(topology, waitUntilReady: false);
+        var initializer = messaging.GetRequiredService<RabbitMqTopologyInitializer>();
 
         Assert.True(await WaitUntilAsync(() => initializer.HasConfigurationError), "Expected a configuration error.");
         Assert.False(initializer.IsReady);
     }
 
     [Fact]
-    public async Task Topology_IsIdempotent_WhenSecondWorkerStarts()
+    public async Task Topology_IsIdempotent_WhenSecondInstanceStarts()
     {
         var topology = RabbitMqFixture.CreateTopologySettings();
 
-        await using var first = await StartWorkerAsync(topology);
-        await using var second = await StartWorkerAsync(topology);
+        await using var first = await StartMessagingAsync(topology);
+        await using var second = await StartMessagingAsync(topology);
     }
 
-    private async Task<WorkerFactory> StartWorkerAsync(TopologySettings topology, params (string Key, string? Value)[] settings)
+    /// <summary>
+    /// Runs only the messaging registrations of the worker (no consumer, database or model), so these
+    /// tests can inspect the queues without anything consuming from them.
+    /// </summary>
+    private async Task<ServiceProvider> StartMessagingAsync(TopologySettings topology, params (string Key, string? Value)[] settings) =>
+        await StartMessagingAsync(topology, waitUntilReady: true, settings);
+
+    private async Task<ServiceProvider> StartMessagingAsync(
+        TopologySettings topology,
+        bool waitUntilReady,
+        params (string Key, string? Value)[] settings)
     {
-        var factory = new WorkerFactory([.. rabbitMq.WorkerSettings(topology), .. settings]);
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(rabbitMq.WorkerSettings(topology).Concat(settings)
+                .Select(setting => KeyValuePair.Create(setting.Key, setting.Value)))
+            .Build();
+        var services = new ServiceCollection()
+            .AddLogging()
+            .AddCommentAnalysisMessaging(configuration)
+            .BuildServiceProvider();
+
         try
         {
-            await factory.Services.GetRequiredService<RabbitMqTopologyInitializer>()
-                .WaitUntilReadyAsync(CancellationToken.None)
-                .WaitAsync(Timeout);
+            var initializer = services.GetRequiredService<RabbitMqTopologyInitializer>();
+            await initializer.StartAsync(CancellationToken.None);
+            if (waitUntilReady)
+            {
+                await initializer.WaitUntilReadyAsync(CancellationToken.None).WaitAsync(Timeout);
+            }
 
-            return factory;
+            return services;
         }
         catch
         {
-            await factory.DisposeAsync();
+            await services.DisposeAsync();
             throw;
         }
     }

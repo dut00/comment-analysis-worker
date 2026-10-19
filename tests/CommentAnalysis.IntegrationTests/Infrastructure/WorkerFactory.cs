@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace CommentAnalysis.IntegrationTests.Infrastructure;
 
@@ -37,6 +39,9 @@ internal sealed class WorkerFactory : WebApplicationFactory<Program>
     /// <summary>Host environment; WebApplicationFactory defaults to Development.</summary>
     public string Environment { get; init; } = "Development";
 
+    /// <summary>Replaces services after the worker registered its own (e.g. a test decision model).</summary>
+    public Action<IServiceCollection>? ConfigureServices { get; init; }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment(Environment);
@@ -44,6 +49,11 @@ internal sealed class WorkerFactory : WebApplicationFactory<Program>
         foreach (var (key, value) in _settings)
         {
             builder.UseSetting(key, value);
+        }
+
+        if (ConfigureServices is { } configure)
+        {
+            builder.ConfigureTestServices(configure);
         }
     }
 }

@@ -12,7 +12,7 @@ public class ReadinessTests(PostgresFixture postgres, RabbitMqFixture rabbitMq)
     private static readonly Uri LiveUri = new("/health/live", UriKind.Relative);
 
     [Fact]
-    public async Task Ready_ReturnsOk_WhenPostgresAndRabbitMqAreReachable()
+    public async Task Ready_ReturnsOk_OnceDependenciesAreReachableAndTheConsumerRuns()
     {
         await using var factory = new WorkerFactory(
         [
@@ -20,11 +20,18 @@ public class ReadinessTests(PostgresFixture postgres, RabbitMqFixture rabbitMq)
             .. rabbitMq.WorkerSettings(RabbitMqFixture.CreateTopologySettings()),
         ]);
         using var client = factory.CreateClient();
-        await WaitForTopologyAsync(factory);
 
-        var response = await client.GetAsync(ReadyUri);
+        // Readiness turns healthy only after the topology is declared and the consumer is registered,
+        // so poll it as an orchestrator would.
+        var status = HttpStatusCode.ServiceUnavailable;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        while (status != HttpStatusCode.OK && !timeout.IsCancellationRequested)
+        {
+            status = (await client.GetAsync(ReadyUri)).StatusCode;
+            await Task.Delay(100);
+        }
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, status);
     }
 
     [Fact]
