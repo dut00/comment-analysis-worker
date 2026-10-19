@@ -1,6 +1,8 @@
 using System.Net;
 using CommentAnalysis.Core.Analysis;
 using CommentAnalysis.Core.Decisions;
+using CommentAnalysis.Core.Models;
+using CommentAnalysis.Infrastructure.Models.Llm;
 using CommentAnalysis.IntegrationTests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -34,6 +36,33 @@ public class WorkerHostTests
         Assert.Equal(Decision.Reject, result.Decision);
         Assert.Equal(0.95, result.Confidence);
         Assert.Equal("static@2.0.0", result.Model.Version);
+    }
+
+    [Fact]
+    public async Task DecisionModel_IsTheLlm_WhenConfigured()
+    {
+        await using var factory = new WorkerFactory(
+            ("Model:Provider", "Llm"),
+            ("Model:Llm:BaseUrl", "http://localhost:1234/v1/"),
+            ("Model:Llm:Model", "basal-2.0-mini"),
+            ("Model:Llm:Version", "2.0"));
+
+        var model = factory.Services.GetRequiredService<IDecisionModel>();
+
+        Assert.IsType<LlmDecisionModel>(model);
+        Assert.StartsWith("basal-2.0-mini@2.0+", model.Info.Version, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Startup_Fails_WhenLlmIsNotConfigured()
+    {
+        await using var factory = new WorkerFactory(("Model:Provider", "Llm"));
+
+        var exception = Assert.Throws<OptionsValidationException>(() => factory.CreateClient());
+
+        Assert.Contains("Model:Llm:BaseUrl", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("Model:Llm:Model is required", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("Model:Llm:Version is required", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
