@@ -31,9 +31,9 @@ RabbitMQ exchange "comments" (topic)
 ```
 
 ### Decision policy
-- The model returns a label (`toxic` / `non-toxic`) and a confidence for it. ONNX: `confidence = max(pToxic, 1 - pToxic)`.
-- `non-toxic` and `confidence >= ApproveThreshold` (default 0.85) → Approve
-- `toxic` and `confidence >= RejectThreshold` (default 0.90) → Reject
+- The model returns a `ContentLabel` (`Acceptable` / `Unacceptable`) and a confidence for it. ONNX maps `non-toxic` → Acceptable and `toxic` → Unacceptable with `confidence = max(pToxic, 1 - pToxic)`; Jev maps `approve` → Acceptable and `reject` → Unacceptable.
+- `Acceptable` and `confidence >= ApproveThreshold` (default 0.85) → Approve
+- `Unacceptable` and `confidence >= RejectThreshold` (default 0.90) → Reject
 - anything else → ManualReview
 
 ### Model version
@@ -65,9 +65,9 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - Todo: `Directory.Build.props` (net10.0, Nullable, ImplicitUsings, TreatWarningsAsErrors), `Directory.Packages.props` (Central Package Management), `.editorconfig`, project references (Infrastructure → Core, Worker → Infrastructure, tests → their targets), and a placeholder `README.md`.
 - Done when: `dotnet build` and `dotnet test` pass with zero warnings.
 
-**A2. Core domain types**
-- `Decision` enum, `ModelPrediction` (label, confidence, raw probabilities), `ModelInfo` (name, version).
-- Done when: the project compiles.
+**A2. Core domain types** `[x]`
+- `Decision` enum, `ContentLabel` enum (model-agnostic label), `ModelPrediction` (label, confidence validated to [0, 1], raw probabilities), `ModelInfo` (name, version).
+- Done when: the project compiles and validation tests pass.
 
 **A3. Decision policy**
 - `DecisionPolicyOptions` (thresholds, validated to [0.5, 1]) and `DecisionPolicy.Decide(ModelPrediction)`.
