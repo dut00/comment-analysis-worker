@@ -12,6 +12,7 @@ The project is being built incrementally. `docs/implementation-plan.md` is the s
 
 - Talk to the user in Polish. Write all code, comments, commit messages and documentation (including this file and the plan) in English.
 - Work one increment from the plan at a time. Each increment ends with a passing build and tests, the status marked in `docs/implementation-plan.md`, and **one commit**. Then stop and report before starting the next increment.
+- Before committing an increment, run the `code-reviewer` subagent (`.claude/agents/code-reviewer.md`) on the uncommitted changes. Fix HIGH findings (and MEDIUM ones that are in scope) before the commit, and include a short summary of the review – what was fixed, what was deferred and why – in the report to the user.
 - The default branch is `master`.
 
 ## Commands
@@ -27,6 +28,7 @@ dotnet tool restore                            # once: installs dotnet-ef from d
 dotnet ef migrations add <Name> --project src/CommentAnalysis.Infrastructure --startup-project src/CommentAnalysis.Infrastructure --output-dir Persistence/Migrations
 dotnet run --project src/CommentAnalysis.Worker  # local run on http://localhost:5080 (8080 is taken on the dev machine; containers use 8080). Needs Postgres (localhost:5433) and RabbitMQ (localhost:5672) from compose
 docker compose up --build -d                   # run in containers (worker http://localhost:5080, RabbitMQ UI http://localhost:15672 guest/guest, Postgres localhost:5433)
+docker compose down -v                         # reset local data; needed after changing RabbitMQ queue arguments (PRECONDITION_FAILED)
 ```
 
 Integration tests (`tests/CommentAnalysis.IntegrationTests`) use Testcontainers (`PostgresFixture`, one container per collection), so Docker must be running. Tests isolate data by using fresh ids rather than cleaning tables. `WorkerFactory` hosts the worker in-process with settings that need no external services.
@@ -43,12 +45,13 @@ Integration tests (`tests/CommentAnalysis.IntegrationTests`) use Testcontainers 
 Dependency direction: `Worker → Infrastructure → Core`. Core has no infrastructure dependencies.
 
 - **Core**: domain and contracts. `IDecisionModel` is the abstraction over the model. `DecisionPolicy` turns a `ModelPrediction` (label + confidence) into a `Decision` using configurable thresholds. The model-agnostic `ContentLabel` (`Acceptable`/`Unacceptable`) decouples the policy from concrete models. Approve requires `Acceptable` with confidence ≥ `ApproveThreshold`, Reject requires `Unacceptable` with confidence ≥ `RejectThreshold`, and everything else is ManualReview. Message records `CommentCreated` and `CommentAnalyzed` are serialized with camelCase JSON and enums as strings.
-- **Infrastructure**: implementations of `IDecisionModel`, selected by `Model:Provider`. The default is a local ONNX toxicity classifier (`OnnxToxicityModel`). An alternative is the Jev decision model by TypeSafe AI (`POST https://api.typesafe.ai/v1/systemone`, `choice` question, version taken from the response `model` field). Also contains EF Core/Npgsql persistence and RabbitMQ.Client 7.x (async API, used directly without MassTransit).
+- **Infrastructure**: implementations of `IDecisionModel`, selected by `Model:Provider`. The default is a local ONNX toxicity classifier (`OnnxToxicityModel`). An alternative is the Jev decision model by TypeSafe AI (`POST https://api.typesafe.ai/v1/systemone`, `choice` question; `Info.Version` is the pinned `Jev:Model` and a different `model` in the response is an error). Also contains EF Core/Npgsql persistence and RabbitMQ.Client 7.x (async API, used directly without MassTransit).
 - **Worker**: `Microsoft.NET.Sdk.Web` host that exposes only health and metrics endpoints. It contains `CommentCreatedConsumer` and `OutboxPublisher`.
 
 Cross-cutting design points that span several files:
 - **Model version** is persisted with every analysis. For ONNX it is `{Name}@{Version}+{first 12 hex chars of the model file's SHA-256}`, so swapping the file always produces a new version.
 - **Idempotency**: `comment_analyses` has `UNIQUE(comment_id, model_version)`. The consumer skips comments already analyzed by the current model version, and acks only after the DB commit.
 - **Transactional outbox**: the analysis row and the `CommentAnalyzed` outbox row are written in one transaction. `OutboxPublisher` publishes with publisher confirms and claims rows with `FOR UPDATE SKIP LOCKED`, so multiple replicas are safe.
-- **Failures**: malformed messages go straight to the DLQ. Transient errors are retried via an `x-retry-count` header up to `Consumer:MaxRetries`, then sent to the DLQ.
+- **Failures**: malformed or oversized messages go straight to the DLQ. Handled transient errors are retried by the worker via an `x-retry-count` header up to `Consumer:MaxRetries`, then sent to the DLQ. The queue's `x-delivery-limit` only catches consumer crashes: in RabbitMQ 4 a nack/reject with requeue does not count towards it.
+- **Configuration safety**: `Model:Provider` has no default and is never set in the shipped `appsettings.json` (only in Development settings, compose and tests); `appsettings.Development.json` is not published. Comment content and author ids are personal data – never log them at Information level or above.
 - **RabbitMQ topology**: topic exchange `comments` (shared with the comment service). Quorum input queue `comment-analysis.comment-created` (routing key `comment.created`) dead-letters to direct exchange `comment-analysis.dead-letter` → quorum DLQ `comment-analysis.comment-created.dlq`. Output routing key `comment.analyzed`. Declared idempotently in the background by `RabbitMqTopologyInitializer` (retries until RabbitMQ is up; readiness is unhealthy until then).

@@ -11,6 +11,9 @@ namespace CommentAnalysis.Infrastructure.Messaging;
 public sealed partial class RabbitMqConnection(IOptions<RabbitMqOptions> options, ILogger<RabbitMqConnection> logger)
     : IAsyncDisposable
 {
+    /// <summary>Bounds shutdown when the broker is unreachable; the close handshake otherwise has no limit.</summary>
+    private static readonly TimeSpan CloseTimeout = TimeSpan.FromSeconds(5);
+
     private readonly SemaphoreSlim _lock = new(1, 1);
     private IConnection? _connection;
 
@@ -53,7 +56,17 @@ public sealed partial class RabbitMqConnection(IOptions<RabbitMqOptions> options
     {
         if (_connection is not null)
         {
-            await _connection.CloseAsync().ConfigureAwait(false);
+            try
+            {
+                await _connection.CloseAsync(CloseTimeout).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                // Shutdown must not hang or fail because the broker is gone; drop the connection instead.
+                LogCloseFailed(logger, exception);
+                await _connection.AbortAsync(CloseTimeout).ConfigureAwait(false);
+            }
+
             _connection.Dispose();
         }
 
@@ -62,4 +75,7 @@ public sealed partial class RabbitMqConnection(IOptions<RabbitMqOptions> options
 
     [LoggerMessage(EventId = 200, Level = LogLevel.Information, Message = "Connected to RabbitMQ at {Host}:{Port}")]
     private static partial void LogConnected(ILogger logger, string host, int port);
+
+    [LoggerMessage(EventId = 201, Level = LogLevel.Warning, Message = "Closing the RabbitMQ connection failed; aborting it")]
+    private static partial void LogCloseFailed(ILogger logger, Exception exception);
 }

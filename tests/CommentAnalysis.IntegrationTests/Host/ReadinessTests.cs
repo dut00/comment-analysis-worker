@@ -56,6 +56,30 @@ public class ReadinessTests(PostgresFixture postgres, RabbitMqFixture rabbitMq)
         Assert.Equal(HttpStatusCode.OK, live.StatusCode);
     }
 
+    [Fact]
+    public async Task Ready_ReturnsServiceUnavailable_WhenRabbitMqRejectsCredentials()
+    {
+        var topology = RabbitMqFixture.CreateTopologySettings();
+        var wrongCredentials = new UriBuilder(rabbitMq.Uri) { Password = "wrong-password" }.Uri.ToString();
+        await using var factory = new WorkerFactory(
+        [
+            ("Database:ConnectionString", postgres.ConnectionString),
+            .. rabbitMq.WorkerSettings(topology),
+            ("RabbitMq:Uri", wrongCredentials),
+        ]);
+        using var client = factory.CreateClient();
+        var initializer = factory.Services.GetRequiredService<RabbitMqTopologyInitializer>();
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        while (!initializer.HasConfigurationError && !timeout.IsCancellationRequested)
+        {
+            await Task.Delay(100);
+        }
+
+        Assert.True(initializer.HasConfigurationError, "Expected an authentication failure to count as a configuration error.");
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await client.GetAsync(ReadyUri)).StatusCode);
+    }
+
     private static Task WaitForTopologyAsync(WorkerFactory factory) =>
         factory.Services.GetRequiredService<RabbitMqTopologyInitializer>()
             .WaitUntilReadyAsync(CancellationToken.None)

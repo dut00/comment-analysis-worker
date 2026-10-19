@@ -23,6 +23,17 @@ public sealed class RabbitMqOptions
 
     public string DeadLetterQueue { get; set; } = "comment-analysis.comment-created.dlq";
 
+    /// <summary>
+    /// How many times a message may be returned to the input queue because its consumer failed (channel or
+    /// connection closed without an ack, e.g. the worker crashed) before RabbitMQ dead-letters it. Protects
+    /// against poison messages that crash the worker. In RabbitMQ 4 an explicit nack/reject with requeue does
+    /// not count towards this limit, so retries of handled errors need their own mechanism.
+    /// Declared as the queue's <c>x-delivery-limit</c>.
+    /// Queue arguments are fixed once the queue exists: changing this value later requires recreating the
+    /// queue or overriding it with a RabbitMQ policy, otherwise declaration fails with PRECONDITION_FAILED.
+    /// </summary>
+    public int DeliveryLimit { get; set; } = 5;
+
     /// <summary>Upper bound of the exponential back-off between connection attempts.</summary>
     public TimeSpan MaxReconnectDelay { get; set; } = TimeSpan.FromSeconds(30);
 }

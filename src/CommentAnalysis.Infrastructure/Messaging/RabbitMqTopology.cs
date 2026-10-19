@@ -42,8 +42,10 @@ internal static class RabbitMqTopology
             routingKey: options.InputQueue,
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        // Quorum queue: replicated and durable. Rejected (or expired) messages are dead-lettered
-        // to the DLQ, routed by the input queue's name.
+        // Quorum queue: replicated and durable. Rejected messages, and messages delivered more than
+        // DeliveryLimit times, are dead-lettered to the DLQ (routed by the input queue's name).
+        // At-least-once dead-lettering keeps a message in the input queue until the DLQ has confirmed it,
+        // instead of dropping it when the DLQ is unavailable; RabbitMQ requires reject-publish overflow for it.
         await channel.QueueDeclareAsync(
             options.InputQueue,
             durable: true,
@@ -54,6 +56,9 @@ internal static class RabbitMqTopology
                 ["x-queue-type"] = "quorum",
                 ["x-dead-letter-exchange"] = options.DeadLetterExchange,
                 ["x-dead-letter-routing-key"] = options.InputQueue,
+                ["x-dead-letter-strategy"] = "at-least-once",
+                ["x-overflow"] = "reject-publish",
+                ["x-delivery-limit"] = options.DeliveryLimit,
             },
             cancellationToken: cancellationToken).ConfigureAwait(false);
 

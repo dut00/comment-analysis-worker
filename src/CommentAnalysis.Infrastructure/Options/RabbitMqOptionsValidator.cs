@@ -27,6 +27,11 @@ internal sealed class RabbitMqOptionsValidator : IValidateOptions<RabbitMqOption
         AddErrorIfBlank(errors, nameof(options.DeadLetterExchange), options.DeadLetterExchange);
         AddErrorIfBlank(errors, nameof(options.DeadLetterQueue), options.DeadLetterQueue);
 
+        if (options.DeliveryLimit < 1)
+        {
+            errors.Add($"{section}:DeliveryLimit must be at least 1, but was {options.DeliveryLimit}.");
+        }
+
         if (options.MaxReconnectDelay <= TimeSpan.Zero)
         {
             errors.Add($"{section}:MaxReconnectDelay must be positive.");

@@ -8,11 +8,13 @@ using CommentAnalysis.Infrastructure.Persistence;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace CommentAnalysis.Infrastructure;
 
-public static class DependencyInjection
+public static partial class DependencyInjection
 {
     /// <summary>
     /// Registers the comment analysis pipeline: options (validated at startup), the decision
@@ -37,6 +39,7 @@ public static class DependencyInjection
         services.AddSingleton(sp => new DecisionPolicy(sp.GetRequiredService<IOptions<DecisionPolicyOptions>>().Value));
         services.AddSingleton(CreateDecisionModel);
         services.AddSingleton<CommentAnalyzer>();
+        services.AddHostedService<DecisionModelWarmup>();
 
         return services;
     }
@@ -90,10 +93,27 @@ public static class DependencyInjection
     {
         var options = serviceProvider.GetRequiredService<IOptions<ModelOptions>>().Value;
 
-        return options.Provider switch
+        switch (options.Provider)
         {
-            ModelProvider.Static => new StaticDecisionModel(options.Static),
-            _ => throw new InvalidOperationException($"Unsupported model provider '{options.Provider}'."),
-        };
+            case ModelProvider.Static:
+                if (serviceProvider.GetService<IHostEnvironment>() is { } environment && !environment.IsDevelopment())
+                {
+                    LogStaticModelOutsideDevelopment(
+                        serviceProvider.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(DependencyInjection)),
+                        environment.EnvironmentName,
+                        options.Static.Label);
+                }
+
+                return new StaticDecisionModel(options.Static);
+
+            default:
+                throw new InvalidOperationException($"Unsupported model provider '{options.Provider}'.");
+        }
     }
+
+    [LoggerMessage(
+        EventId = 1,
+        Level = LogLevel.Warning,
+        Message = "The Static model is active in the {Environment} environment: every comment is labelled {Label} without analysis. Use it for local development and tests only.")]
+    private static partial void LogStaticModelOutsideDevelopment(ILogger logger, string environment, ContentLabel label);
 }

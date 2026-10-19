@@ -15,6 +15,25 @@ public class ModelInfoTests
     }
 
     [Fact]
+    public void Constructor_AcceptsMaxLength()
+    {
+        var value = new string('a', ModelInfo.MaxLength);
+
+        var info = new ModelInfo(value, value);
+
+        Assert.Equal(ModelInfo.MaxLength, info.Version.Length);
+    }
+
+    [Theory]
+    [InlineData(ModelInfo.MaxLength + 1, 10)]
+    [InlineData(10, ModelInfo.MaxLength + 1)]
+    public void Constructor_Throws_WhenNameOrVersionIsTooLong(int nameLength, int versionLength)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new ModelInfo(new string('n', nameLength), new string('v', versionLength)));
+    }
+
+    [Fact]
     public void Equality_IsBasedOnNameAndVersion()
     {
         Assert.Equal(new ModelInfo("jev", "jev-1.13.0"), new ModelInfo("jev", "jev-1.13.0"));

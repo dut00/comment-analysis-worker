@@ -25,6 +25,34 @@ public class ModelPredictionTests
         Assert.Throws<ArgumentOutOfRangeException>(() => new ModelPrediction(ContentLabel.Acceptable, confidence));
     }
 
+    [Theory]
+    [InlineData(-0.1)]
+    [InlineData(1.1)]
+    [InlineData(double.NaN)]
+    [InlineData(double.NegativeInfinity)]
+    public void Constructor_Throws_WhenAnyProbabilityIsOutOfRange(double probability)
+    {
+        var probabilities = new Dictionary<string, double> { ["toxic"] = 0.4, ["non-toxic"] = probability };
+
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(
+            () => new ModelPrediction(ContentLabel.Acceptable, 0.6, probabilities));
+
+        Assert.Contains("non-toxic", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Probabilities_AreCopied_SoLaterChangesDoNotAffectPrediction()
+    {
+        var probabilities = new Dictionary<string, double> { ["toxic"] = 0.9 };
+        var prediction = new ModelPrediction(ContentLabel.Unacceptable, 0.9, probabilities);
+
+        probabilities["toxic"] = 0.1;
+        probabilities["spam"] = 0.5;
+
+        Assert.Equal(0.9, prediction.Probabilities["toxic"]);
+        Assert.False(prediction.Probabilities.ContainsKey("spam"));
+    }
+
     [Fact]
     public void Probabilities_DefaultsToEmpty()
     {

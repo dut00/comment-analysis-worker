@@ -89,6 +89,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 **B1. Minimal worker host** `[x]`
 - `Program.cs`: options binding with `ValidateOnStart`, structured console logging, a `/health/live` endpoint, and a `Model:Provider` setting. A `Static` provider returns a fixed prediction, so the worker runs without a real model.
 - Implemented as `AddCommentAnalysis(configuration)` in Infrastructure (`DependencyInjection.cs`). `Model:Provider` has no default, so a missing value fails at startup. Logs are JSON in production and single-line text in Development. Integration tests use `WebApplicationFactory<Program>`.
+- After the first full review: `Model:Provider` is set only in `appsettings.Development.json`, compose and tests – never in the shipped `appsettings.json` (which is also the only settings file in the image). The model is created at startup (`DecisionModelWarmup`), and the Static model logs a warning outside Development.
 - Done when: `dotnet run` starts and `/health/live` returns 200.
 
 **B2. Container** `[x]`
@@ -119,17 +120,22 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 **D1. Connection and topology** `[x]`
 - `RabbitMqOptions`, a singleton connection provider (RabbitMQ.Client 7.x, async API), and a `TopologyInitializer` that declares the exchange, the queue, the DLX and the DLQ. RabbitMQ is added to compose, and readiness now also checks RabbitMQ.
 - `RabbitMqTopologyInitializer` is a `BackgroundService` that retries with exponential back-off (up to `RabbitMq:MaxReconnectDelay`), so the host starts even when RabbitMQ is down; consumers will await `WaitUntilReadyAsync`. After the first connection the client's automatic recovery reconnects. Both queues are quorum queues; the input queue dead-letters to `comment-analysis.dead-letter` (direct) → `comment-analysis.comment-created.dlq`. Queue arguments cannot change on an existing queue (PRECONDITION_FAILED), so later tuning goes through RabbitMQ policies. Integration tests isolate topology per test with unique exchange/queue names. Verified in compose: stopping RabbitMQ turns `/health/ready` to 503 and it recovers on its own after restart.
+- Changing queue arguments breaks existing queues with PRECONDITION_FAILED (readiness then reports a configuration error). Locally: `docker compose down -v` or delete the queue in the management UI; in deployed environments use RabbitMQ policies (H4).
+- After the first full review: the input queue uses at-least-once dead-lettering (`x-dead-letter-strategy`, which requires `x-overflow: reject-publish`) and `x-delivery-limit` = `RabbitMq:DeliveryLimit` (default 5). In RabbitMQ 4 only consumer failures (channel or connection closed without an ack) count towards the limit; an explicit nack/reject with requeue does not. Non-recoverable broker errors (authentication, 403 access refused, 406 precondition failed) are logged as errors and reported by readiness as a configuration error. The connection closes with a 5 s timeout and is aborted if that fails.
 - Done when: the queues are visible in the management UI after startup.
 
 **D2. Consumer – happy path**
 - `CommentCreatedConsumer` as a `BackgroundService`: manual ack, configurable prefetch, a new DI scope per message, and a log scope carrying `commentId`. It deserializes the message, skips it if already analyzed, analyzes it, saves the result and then acks.
 - Graceful shutdown: on stop, cancel the consumer (no new deliveries), let the in-flight message finish and ack, then close the channel. Align timeouts so the host finishes before the orchestrator kills it: `HostOptions.ShutdownTimeout` (configurable, e.g. 25 s) < compose `stop_grace_period` (e.g. 30 s) < k8s `terminationGracePeriodSeconds`. Docker's default grace period is only 10 s, while the .NET host waits up to 30 s by default.
 - Test: stopping the host while a message is being processed still produces the DB row and acks the message.
+- Use a processing token for the in-flight message that is *not* the host's `stoppingToken` (it is cancelled at shutdown and would abort the save); bound it by `ShutdownTimeout` instead.
+- Logging: the log scope carries `commentId` only. Comment `content` and `authorId` are personal data and must not appear in logs at Information level or above, nor in exception messages.
 - Integration test (Postgres + RabbitMQ containers, fake model): publishing a message produces a DB row.
 
 **D3. Failure handling**
 - Malformed JSON or failed validation → straight to the DLQ.
-- Transient errors → republish with an `x-retry-count` header up to `Consumer:MaxRetries`, then DLQ.
+- Input limits: reject messages whose body exceeds a configured size (check the AMQP body length before deserializing) and comments whose `content` exceeds `Consumer:MaxContentLength` – a multi-megabyte comment would otherwise be a cheap DoS on the model (F2).
+- Handled transient errors (e.g. database unavailable) → retried by the worker itself: republish a copy with an incremented `x-retry-count` header (with publisher confirms) before acking the original, up to `Consumer:MaxRetries`, then reject to the DLQ. Note: in RabbitMQ 4 a nack/reject with requeue does not count towards `x-delivery-limit` (verified), so the queue's delivery limit only covers consumer crashes (D1).
 - Integration tests for each path.
 
 ### Phase E – Outgoing events
@@ -140,6 +146,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 **E2. Outbox publisher**
 - A `BackgroundService` that polls unpublished rows (`FOR UPDATE SKIP LOCKED`, so multiple replicas are safe), publishes with publisher confirms and marks the rows as published.
+- Use a separate AMQP connection for publishing (distinct `ClientProvidedName`): RabbitMQ blocks publishing connections under flow control or resource alarms, which must not stall the consumer's acks. Make `RabbitMqConnection` support named connections ("consumer", "publisher") before this step.
 - End-to-end integration test: `CommentCreated` in → `CommentAnalyzed` out.
 
 ### Phase F – Real model (ONNX)
@@ -168,6 +175,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 **G2. JevDecisionModel**
 - Sends a `choice` question (`approve` / `reject`) with the moderation instructions taken from config, and maps the response `choice`, `confidence` and `model` to a `ModelPrediction`. Enabled with `Model:Provider=Jev`.
+- `IDecisionModel.Info.Version` stays the version pinned in `Jev:Model`, so the idempotency check before calling the model and the stored version always agree. `JevDecisionModel` compares the response `model` with the pinned version and treats a mismatch as an error (no silent storage under the wrong version). The mismatch is a non-transient error: the message goes straight to the DLQ (no retries), it is logged at Error level, and readiness reports it, because every following message would fail the same way.
 - Tests: mapping, and how errors are handled.
 
 ### Phase H – Production readiness
@@ -180,6 +188,11 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 **H3. Documentation**
 - README: architecture, configuration reference, running locally, sending a test comment, swapping models, and the production migration bundle.
+
+**H4. Production hardening**
+- Enforce TLS outside Development: reject `amqp://` (require `amqps://`) and PostgreSQL connection strings without `SSL Mode=VerifyFull`.
+- Pin container image tags to a patch version or digest (Dockerfile, compose, Testcontainers).
+- Document the RabbitMQ policies to use instead of queue arguments for tuning existing queues (delivery limit, dead-letter strategy). Note for operators: `x-overflow: reject-publish` only matters once a max-length is set – then publishers get nacks and must use publisher confirms. The DLQ is a quorum queue with RabbitMQ 4's implicit delivery limit (20) and no dead-letter target, so a message that crashes 20 DLQ consumers in a row would be dropped; set an explicit limit via policy if DLQ replay tooling is introduced.
 
 ---
 

@@ -8,4 +8,9 @@
     <ProjectReference Include="..\CommentAnalysis.Infrastructure\CommentAnalysis.Infrastructure.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Local-development settings (credentials, static model) must not ship in the published image. -->
+    <Content Update="appsettings.Development.json" CopyToPublishDirectory="Never" />
+  </ItemGroup>
+
 </Project>

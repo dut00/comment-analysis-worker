@@ -36,6 +36,18 @@ public class WorkerHostTests
         Assert.Equal("static@2.0.0", result.Model.Version);
     }
 
+    [Fact]
+    public async Task Startup_Fails_WhenModelProviderIsNotConfigured_OutsideDevelopment()
+    {
+        // Only the shipped appsettings.json applies: a deployment that forgets Model__Provider
+        // must not fall back to a model that approves everything.
+        await using var factory = new WorkerFactory(("Model:Provider", null)) { Environment = "Production" };
+
+        var exception = Assert.Throws<OptionsValidationException>(() => factory.CreateClient());
+
+        Assert.Contains("Model:Provider is required", exception.Message, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("DecisionPolicy:ApproveThreshold", "0.3", "DecisionPolicy:ApproveThreshold")]
     [InlineData("Model:Provider", "", "Model:Provider is required")]

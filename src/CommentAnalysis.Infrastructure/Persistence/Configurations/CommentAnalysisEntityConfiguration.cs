@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CommentAnalysis.Core.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
@@ -8,7 +9,6 @@ namespace CommentAnalysis.Infrastructure.Persistence.Configurations;
 internal sealed class CommentAnalysisEntityConfiguration : IEntityTypeConfiguration<CommentAnalysisEntity>
 {
     private const int EnumMaxLength = 32;
-    private const int ModelMaxLength = 200;
 
     public void Configure(EntityTypeBuilder<CommentAnalysisEntity> builder)
     {
@@ -43,8 +43,8 @@ internal sealed class CommentAnalysisEntityConfiguration : IEntityTypeConfigurat
                     value => value.Aggregate(0, (hash, pair) => HashCode.Combine(hash, pair.Key, pair.Value)),
                     value => new Dictionary<string, double>(value)));
 
-        builder.Property(e => e.ModelName).HasColumnName("model_name").HasMaxLength(ModelMaxLength);
-        builder.Property(e => e.ModelVersion).HasColumnName("model_version").HasMaxLength(ModelMaxLength);
+        builder.Property(e => e.ModelName).HasColumnName("model_name").HasMaxLength(ModelInfo.MaxLength);
+        builder.Property(e => e.ModelVersion).HasColumnName("model_version").HasMaxLength(ModelInfo.MaxLength);
         builder.Property(e => e.AnalyzedAt).HasColumnName("analyzed_at");
         builder.Property(e => e.DurationMs).HasColumnName("duration_ms");
 
