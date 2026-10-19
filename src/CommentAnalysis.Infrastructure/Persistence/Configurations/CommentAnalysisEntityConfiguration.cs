@@ -51,7 +51,7 @@ internal sealed class CommentAnalysisEntityConfiguration : IEntityTypeConfigurat
         // One analysis per comment and model version: the basis for idempotent processing.
         builder.HasIndex(e => new { e.CommentId, e.ModelVersion })
             .IsUnique()
-            .HasDatabaseName("ux_comment_analyses_comment_id_model_version");
+            .HasDatabaseName(CommentAnalysisEntity.UniqueCommentModelVersionIndex);
 
         builder.ToTable(table => table.HasCheckConstraint(
             "ck_comment_analyses_confidence_range",

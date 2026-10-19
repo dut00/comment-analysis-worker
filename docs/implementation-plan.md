@@ -105,9 +105,10 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - Test: the EF model has no changes missing from migrations (`HasPendingModelChanges`).
 - Done when: the worker in compose creates the table.
 
-**C2. Analysis store and idempotency**
+**C2. Analysis store and idempotency** `[x]`
 - `IAnalysisStore` with `ExistsAsync(commentId, modelVersion)` and `SaveAsync(result)`, implemented with EF.
 - Integration tests on a Postgres Testcontainer: save, then detect the duplicate. Also check that the unique constraint holds under a race.
+- `IAnalysisStore` lives in Core; `EfAnalysisStore` (Infrastructure) maps a unique-violation on `ux_comment_analyses_comment_id_model_version` to `SaveOutcome.AlreadyExists` instead of throwing, so a lost race is not an error. Tests share one Postgres container per collection (`PostgresFixture`) and isolate data with fresh comment ids; the race test runs 8 concurrent saves.
 
 **C3. Readiness check for Postgres**
 - `/health/ready` reports Postgres status.

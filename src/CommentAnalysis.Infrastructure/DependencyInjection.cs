@@ -57,6 +57,7 @@ public static class DependencyInjection
         services.AddDbContext<AnalysisDbContext>((serviceProvider, builder) =>
             builder.UseAnalysisDatabase(serviceProvider.GetRequiredService<IOptions<DatabaseOptions>>().Value.ConnectionString));
 
+        services.AddScoped<IAnalysisStore, EfAnalysisStore>();
         services.AddHostedService<DatabaseMigrator>();
 
         return services;

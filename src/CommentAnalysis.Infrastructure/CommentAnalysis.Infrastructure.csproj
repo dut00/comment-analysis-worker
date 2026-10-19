@@ -17,4 +17,8 @@
     <ProjectReference Include="..\CommentAnalysis.Core\CommentAnalysis.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="CommentAnalysis.IntegrationTests" />
+  </ItemGroup>
+
 </Project>

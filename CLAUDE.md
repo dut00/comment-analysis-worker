@@ -29,7 +29,7 @@ dotnet run --project src/CommentAnalysis.Worker  # local run on http://localhost
 docker compose up --build -d                   # run in containers (worker on http://localhost:5080)
 ```
 
-Integration tests (`tests/CommentAnalysis.IntegrationTests`) will use Testcontainers, so Docker must be running.
+Integration tests (`tests/CommentAnalysis.IntegrationTests`) use Testcontainers (`PostgresFixture`, one container per collection), so Docker must be running. Tests isolate data by using fresh ids rather than cleaning tables. `WorkerFactory` hosts the worker in-process with settings that need no external services.
 
 ## Build conventions
 

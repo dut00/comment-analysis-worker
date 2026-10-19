@@ -10,6 +10,8 @@ namespace CommentAnalysis.Infrastructure.Persistence;
 /// </summary>
 public sealed class CommentAnalysisEntity
 {
+    public const string UniqueCommentModelVersionIndex = "ux_comment_analyses_comment_id_model_version";
+
     public Guid Id { get; set; }
 
     public Guid CommentId { get; set; }
