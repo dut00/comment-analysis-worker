@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using CommentAnalysis.Core.Analysis;
 using CommentAnalysis.Core.Messages;
@@ -44,7 +46,14 @@ internal sealed partial class CommentCreatedConsumer(
     /// <summary>Caps each step of closing the channel (close, abort, dispose); counted in the shutdown budget.</summary>
     private static readonly TimeSpan ChannelCloseTimeout = TimeSpan.FromSeconds(2);
 
+    /// <summary>Longest producer-controlled value (e.g. a message id) written to logs.</summary>
+    private const int MaxLoggedValueLength = 128;
+
+    internal const string RetryCountHeader = "x-retry-count";
+
     private readonly int _concurrency = consumerOptions.Value.Concurrency;
+    private readonly int _maxMessageBytes = consumerOptions.Value.MaxMessageBytes;
+    private readonly int _maxContentLength = consumerOptions.Value.MaxContentLength;
 
     // One permit per concurrent handler; shutdown acquires all of them to wait for in-flight messages.
     // A handler from a lost channel may still hold its permit while the recreated channel delivers.
@@ -147,8 +156,9 @@ internal sealed partial class CommentCreatedConsumer(
 
         var channel = await amqp.CreateChannelAsync(
             new CreateChannelOptions(
-                publisherConfirmationsEnabled: false,
-                publisherConfirmationTrackingEnabled: false,
+                // Retries are republished on this channel and must be confirmed before the original is acked.
+                publisherConfirmationsEnabled: true,
+                publisherConfirmationTrackingEnabled: true,
                 consumerDispatchConcurrency: (ushort)settings.Concurrency),
             cancellationToken).ConfigureAwait(false);
         lock (_stateLock)
@@ -345,6 +355,15 @@ internal sealed partial class CommentCreatedConsumer(
 
     private async Task HandleAsync(IChannel channel, BasicDeliverEventArgs delivery, CancellationToken cancellationToken)
     {
+        // Invalid input is never retried (the same bytes would fail again); it is dead-lettered for inspection.
+        var messageId = SanitizeForLog(delivery.BasicProperties.MessageId);
+        if (delivery.Body.Length > _maxMessageBytes)
+        {
+            LogMessageTooLarge(logger, messageId, delivery.DeliveryTag, delivery.Body.Length, _maxMessageBytes);
+            await DeadLetterAsync(channel, delivery).ConfigureAwait(false);
+            return;
+        }
+
         CommentCreated comment;
         try
         {
@@ -352,14 +371,19 @@ internal sealed partial class CommentCreatedConsumer(
         }
         catch (JsonException exception)
         {
-            // Never retried: the same bytes would fail again. Dead-lettered for inspection.
-            LogMalformedMessage(logger, exception, delivery.BasicProperties.MessageId, delivery.DeliveryTag);
-            await SettleAsync(() => channel.BasicRejectAsync(delivery.DeliveryTag, requeue: false, CancellationToken.None))
-                .ConfigureAwait(false);
+            LogMalformedMessage(logger, exception, messageId, delivery.DeliveryTag);
+            await DeadLetterAsync(channel, delivery).ConfigureAwait(false);
             return;
         }
 
         using var scope = CommentScope(logger, comment.CommentId);
+
+        if (comment.Content.Length > _maxContentLength)
+        {
+            LogContentTooLong(logger, comment.Content.Length, _maxContentLength);
+            await DeadLetterAsync(channel, delivery).ConfigureAwait(false);
+            return;
+        }
 
         ProcessingResult result;
         try
@@ -376,10 +400,8 @@ internal sealed partial class CommentCreatedConsumer(
         }
         catch (Exception exception)
         {
-            // Unexpected failure (e.g. database unavailable). Requeued for another attempt; D3 adds bounded retries.
-            LogProcessingFailed(logger, exception);
-            await SettleAsync(() => channel.BasicNackAsync(delivery.DeliveryTag, multiple: false, requeue: true, CancellationToken.None))
-                .ConfigureAwait(false);
+            // E.g. the database or the model is unavailable.
+            await RetryOrDeadLetterAsync(channel, delivery, exception).ConfigureAwait(false);
             return;
         }
 
@@ -395,6 +417,138 @@ internal sealed partial class CommentCreatedConsumer(
         {
             LogAlreadyAnalyzed(logger, result.Model.Version);
         }
+    }
+
+    /// <summary>
+    /// Retries a failed message by republishing a copy with an incremented <c>x-retry-count</c> header and then
+    /// acking the original, or dead-letters it once <see cref="ConsumerOptions.MaxRetries"/> is reached.
+    /// </summary>
+    /// <remarks>
+    /// A nack with requeue would not do: RabbitMQ 4 does not count it towards <c>x-delivery-limit</c>, so a
+    /// message that always fails would loop forever. The copy goes through the default exchange straight to the
+    /// input queue, so other subscribers of <c>comment.created</c> do not see it. If the worker crashes between
+    /// the confirmed publish and the ack (or the ack fails on a lost channel), both copies are processed, which
+    /// idempotency makes harmless; under a persistent failure each copy may end up in the DLQ.
+    /// </remarks>
+    private async Task RetryOrDeadLetterAsync(IChannel channel, BasicDeliverEventArgs delivery, Exception exception)
+    {
+        var retryCount = GetRetryCount(delivery.BasicProperties);
+        var settings = consumerOptions.Value;
+        if (retryCount >= settings.MaxRetries)
+        {
+            LogRetriesExhausted(logger, exception, retryCount);
+            await DeadLetterAsync(channel, delivery).ConfigureAwait(false);
+            return;
+        }
+
+        LogProcessingFailed(logger, exception, retryCount + 1, settings.MaxRetries);
+        try
+        {
+            // Shutdown interrupts the delay; the message is then redelivered with the same retry count.
+            var delay = TimeSpan.FromTicks(Math.Min(settings.RetryDelay.Ticks * (retryCount + 1), ConsumerOptions.MaxRetryDelay.Ticks));
+            await Task.Delay(delay, timeProvider, _stopRequested.Token).ConfigureAwait(false);
+
+            var properties = new BasicProperties(delivery.BasicProperties)
+            {
+                Headers = CreateRetryHeaders(delivery.BasicProperties.Headers, retryCount + 1),
+            };
+
+            // Waiting for the confirm is cancelled only by the shutdown timeout (e.g. a blocked connection).
+            await channel.BasicPublishAsync(
+                exchange: string.Empty,
+                routingKey: rabbitMqOptions.Value.InputQueue,
+                mandatory: true,
+                properties,
+                delivery.Body,
+                _processingCancellation.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_stopRequested.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (Exception publishException)
+        {
+            // Not confirmed (or returned as unroutable): keep the original instead, uncounted.
+            LogRetryPublishFailed(logger, publishException);
+            await SettleAsync(() => channel.BasicNackAsync(delivery.DeliveryTag, multiple: false, requeue: true, CancellationToken.None))
+                .ConfigureAwait(false);
+            return;
+        }
+
+        await SettleAsync(() => channel.BasicAckAsync(delivery.DeliveryTag, multiple: false, CancellationToken.None))
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Headers of a retry copy: the original ones with the incremented retry count, minus those that must not travel
+    /// with a new message. <c>CC</c>/<c>BCC</c> would make RabbitMQ also route the copy to the queues they name (with
+    /// the worker's permissions), and the dead-lettering and delivery-count headers describe the original message.
+    /// </summary>
+    internal static Dictionary<string, object?> CreateRetryHeaders(IDictionary<string, object?>? original, int retryCount)
+    {
+        var headers = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var (key, value) in original ?? new Dictionary<string, object?>())
+        {
+            if (!IsDroppedOnRetry(key))
+            {
+                headers[key] = value;
+            }
+        }
+
+        headers[RetryCountHeader] = retryCount;
+        return headers;
+    }
+
+    private static bool IsDroppedOnRetry(string header) =>
+        header is "CC" or "BCC" or "x-death" or "x-delivery-count"
+        || header.StartsWith("x-first-death-", StringComparison.Ordinal)
+        || header.StartsWith("x-last-death-", StringComparison.Ordinal);
+
+    /// <summary>Reads the <c>x-retry-count</c> header; a missing, malformed or negative value counts as zero.</summary>
+    internal static int GetRetryCount(IReadOnlyBasicProperties properties)
+    {
+        if (properties.Headers is null || !properties.Headers.TryGetValue(RetryCountHeader, out var value))
+        {
+            return 0;
+        }
+
+        long count = value switch
+        {
+            int number => number,
+            long number => number,
+            short number => number,
+            byte number => number,
+            sbyte number => number,
+            uint number => number,
+            byte[] text when long.TryParse(Encoding.UTF8.GetString(text), NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) => parsed,
+            _ => 0,
+        };
+
+        return (int)Math.Clamp(count, 0, int.MaxValue);
+    }
+
+    private Task DeadLetterAsync(IChannel channel, BasicDeliverEventArgs delivery) =>
+        SettleAsync(() => channel.BasicRejectAsync(delivery.DeliveryTag, requeue: false, CancellationToken.None));
+
+    /// <summary>
+    /// Makes a producer-controlled value safe to log: truncated, with control characters (e.g. CR/LF, which
+    /// would allow forging log lines in plain-text formatters) replaced.
+    /// </summary>
+    internal static string? SanitizeForLog(string? value)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+
+        var length = Math.Min(value.Length, MaxLoggedValueLength);
+        return string.Create(length, value, static (span, source) =>
+        {
+            for (var i = 0; i < span.Length; i++)
+            {
+                span[i] = char.IsControl(source[i]) ? '?' : source[i];
+            }
+        });
     }
 
     /// <summary>
@@ -425,8 +579,14 @@ internal sealed partial class CommentCreatedConsumer(
     [LoggerMessage(EventId = 303, Level = LogLevel.Error, Message = "Rejected malformed message {MessageId} (delivery {DeliveryTag}) to the dead-letter queue")]
     private static partial void LogMalformedMessage(ILogger logger, Exception exception, string? messageId, ulong deliveryTag);
 
-    [LoggerMessage(EventId = 304, Level = LogLevel.Error, Message = "Processing the comment failed; the message is requeued")]
-    private static partial void LogProcessingFailed(ILogger logger, Exception exception);
+    [LoggerMessage(EventId = 304, Level = LogLevel.Warning, Message = "Processing the comment failed; scheduling retry {Retry} of {MaxRetries}")]
+    private static partial void LogProcessingFailed(ILogger logger, Exception exception, int retry, int maxRetries);
+
+    [LoggerMessage(EventId = 316, Level = LogLevel.Error, Message = "Processing the comment failed after {Retries} retries; rejected to the dead-letter queue")]
+    private static partial void LogRetriesExhausted(ILogger logger, Exception exception, int retries);
+
+    [LoggerMessage(EventId = 317, Level = LogLevel.Error, Message = "Republishing the message for a retry failed; the original is requeued")]
+    private static partial void LogRetryPublishFailed(ILogger logger, Exception exception);
 
     [LoggerMessage(EventId = 305, Level = LogLevel.Warning, Message = "Processing was aborted by the shutdown timeout; the message will be redelivered")]
     private static partial void LogProcessingAborted(ILogger logger);
@@ -451,6 +611,12 @@ internal sealed partial class CommentCreatedConsumer(
 
     [LoggerMessage(EventId = 312, Level = LogLevel.Error, Message = "Unhandled exception in a RabbitMQ consumer callback")]
     private static partial void LogCallbackException(ILogger logger, Exception exception);
+
+    [LoggerMessage(EventId = 314, Level = LogLevel.Error, Message = "Rejected message {MessageId} (delivery {DeliveryTag}) to the dead-letter queue: body of {Length} bytes exceeds the limit of {Limit}")]
+    private static partial void LogMessageTooLarge(ILogger logger, string? messageId, ulong deliveryTag, int length, int limit);
+
+    [LoggerMessage(EventId = 315, Level = LogLevel.Error, Message = "Rejected the comment to the dead-letter queue: content of {Length} characters exceeds the limit of {Limit}")]
+    private static partial void LogContentTooLong(ILogger logger, int length, int limit);
 
     [LoggerMessage(EventId = 313, Level = LogLevel.Warning, Message = "Closing the consumer channel failed")]
     private static partial void LogChannelCloseFailed(ILogger logger, Exception exception);
