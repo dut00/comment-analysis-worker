@@ -8,6 +8,9 @@ namespace CommentAnalysis.Core.Messages;
 /// </summary>
 public sealed record CommentAnalyzed
 {
+    /// <summary>The stable type name of this message (e.g. in the outbox); must not change with the class name.</summary>
+    public const string MessageType = "CommentAnalyzed";
+
     public required Guid CommentId { get; init; }
 
     public required Guid PostId { get; init; }
@@ -26,12 +29,18 @@ public sealed record CommentAnalyzed
     public static CommentAnalyzed From(CommentCreated comment, AnalysisResult result)
     {
         ArgumentNullException.ThrowIfNull(comment);
+
+        return From(comment.CommentId, comment.PostId, result);
+    }
+
+    public static CommentAnalyzed From(Guid commentId, Guid postId, AnalysisResult result)
+    {
         ArgumentNullException.ThrowIfNull(result);
 
         return new CommentAnalyzed
         {
-            CommentId = comment.CommentId,
-            PostId = comment.PostId,
+            CommentId = commentId,
+            PostId = postId,
             Decision = result.Decision,
             Confidence = result.Confidence,
             ModelName = result.Model.Name,
