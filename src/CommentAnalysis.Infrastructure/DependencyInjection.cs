@@ -39,6 +39,7 @@ public static partial class DependencyInjection
         services.AddSingleton(sp => new DecisionPolicy(sp.GetRequiredService<IOptions<DecisionPolicyOptions>>().Value));
         services.AddSingleton(CreateDecisionModel);
         services.AddSingleton<CommentAnalyzer>();
+        services.AddScoped<CommentProcessor>();
         services.AddHostedService<DecisionModelWarmup>();
 
         return services;
