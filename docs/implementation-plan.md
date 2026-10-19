@@ -86,8 +86,9 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ### Phase B – Runnable host
 
-**B1. Minimal worker host**
+**B1. Minimal worker host** `[x]`
 - `Program.cs`: options binding with `ValidateOnStart`, structured console logging, a `/health/live` endpoint, and a `Model:Provider` setting. A `Static` provider returns a fixed prediction, so the worker runs without a real model.
+- Implemented as `AddCommentAnalysis(configuration)` in Infrastructure (`DependencyInjection.cs`). `Model:Provider` has no default, so a missing value fails at startup. Logs are JSON in production and single-line text in Development. Integration tests use `WebApplicationFactory<Program>`.
 - Done when: `dotnet run` starts and `/health/live` returns 200.
 
 **B2. Container**

@@ -1,6 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\CommentAnalysis.Core\CommentAnalysis.Core.csproj" />
   </ItemGroup>
 

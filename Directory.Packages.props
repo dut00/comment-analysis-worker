@@ -4,7 +4,13 @@
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
   </PropertyGroup>
 
+  <ItemGroup Label="Hosting">
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.13" />
+  </ItemGroup>
+
   <ItemGroup Label="Testing">
+    <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.13" />
     <PackageVersion Include="coverlet.collector" Version="6.0.4" />
     <PackageVersion Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.11.0" />
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
