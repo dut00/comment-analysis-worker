@@ -8,6 +8,8 @@ public sealed class AnalysisDbContext(DbContextOptions<AnalysisDbContext> option
 
     public DbSet<CommentAnalysisEntity> CommentAnalyses => Set<CommentAnalysisEntity>();
 
+    public DbSet<OutboxMessageEntity> OutboxMessages => Set<OutboxMessageEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(AnalysisDbContext).Assembly);

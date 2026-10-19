@@ -1,4 +1,5 @@
 using CommentAnalysis.Core.Analysis;
+using CommentAnalysis.Core.Messages;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
@@ -17,8 +18,12 @@ internal sealed class EfAnalysisStore(AnalysisDbContext context) : IAnalysisStor
         AnalysisResult result,
         CancellationToken cancellationToken)
     {
+        // One SaveChanges is one transaction: the event is stored if and only if the analysis is.
         var entity = CommentAnalysisEntity.Create(commentId, postId, result);
+        var message = OutboxMessageEntity.Create(
+            CommentAnalyzed.MessageType, CommentAnalyzed.From(commentId, postId, result), result.AnalyzedAt);
         context.CommentAnalyses.Add(entity);
+        context.OutboxMessages.Add(message);
 
         try
         {
@@ -29,6 +34,7 @@ internal sealed class EfAnalysisStore(AnalysisDbContext context) : IAnalysisStor
         {
             // Another worker (or a redelivery) stored this comment and model version in the meantime.
             context.Entry(entity).State = EntityState.Detached;
+            context.Entry(message).State = EntityState.Detached;
             return SaveOutcome.AlreadyExists;
         }
     }
