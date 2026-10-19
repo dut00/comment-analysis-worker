@@ -4,8 +4,9 @@
 A .NET 10 worker that consumes newly created user comments from RabbitMQ, evaluates each one with a decision model, and decides **Approve**, **Reject** or **ManualReview**. For every comment it stores the decision, the model's **confidence** (score) and the **model version** in PostgreSQL. It then publishes a `CommentAnalyzed` event. The worker is stateless and runs in containers.
 
 The model is hidden behind `IDecisionModel`:
-- **Default:** a local ONNX toxicity classifier, which needs no API key and makes no external calls.
+- **Default:** a local LLM (Basal 2.0 mini) served by LM Studio through its OpenAI-compatible chat completions API, asked for a structured `{label, confidence}` answer. It needs no API key and the comments stay on the local machine.
 - **Alternative:** the Jev decision model by TypeSafe AI (`POST https://api.typesafe.ai/v1/systemone`), which can be switched on in configuration once an API key is available.
+- **Optional:** a local ONNX toxicity classifier (phase I), if a non-generative model is preferred later.
 
 ## Ground rules
 - All code, comments, commit messages and documentation are in English.
@@ -31,13 +32,13 @@ RabbitMQ exchange "comments" (topic)
 ```
 
 ### Decision policy
-- The model returns a `ContentLabel` (`Acceptable` / `Unacceptable`) and a confidence for it. ONNX maps `non-toxic` → Acceptable and `toxic` → Unacceptable with `confidence = max(pToxic, 1 - pToxic)`; Jev maps `approve` → Acceptable and `reject` → Unacceptable.
+- The model returns a `ContentLabel` (`Acceptable` / `Unacceptable`) and a confidence for it. The LLM answers `acceptable` / `unacceptable` with a confidence of 0–100, divided by 100. ONNX maps `non-toxic` → Acceptable and `toxic` → Unacceptable with `confidence = max(pToxic, 1 - pToxic)`; Jev maps `approve` → Acceptable and `reject` → Unacceptable.
 - `Acceptable` and `confidence >= ApproveThreshold` (default 0.85) → Approve
 - `Unacceptable` and `confidence >= RejectThreshold` (default 0.90) → Reject
 - anything else → ManualReview
 
 ### Model version
-`{Name}@{Version}+{first 12 hex chars of SHA-256 of the model file}` for ONNX. For Jev, the `model` field returned by the API (e.g. `jev-1.13.0`).
+For the LLM: `{Model}@{Version}+{first 12 hex chars of SHA-256 of the instructions and the response schema}`. `Version` is pinned in config, because the API does not expose the weights; the hash makes any prompt change a new version. For ONNX: `{Name}@{Version}+{first 12 hex chars of SHA-256 of the model file}`. For Jev, the `model` field returned by the API (e.g. `jev-1.13.0`).
 
 ### Solution layout
 ```
@@ -158,23 +159,28 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - Implemented: `RabbitMqConnection` is named (`ClientProvidedName` = `{ClientName}:{name}`); the consumer connection is resolved without a key and the publisher one as a keyed singleton (`publisher`). `OutboxPublisher` (Worker) claims up to `Outbox:BatchSize` (100) rows ordered by `created_at` with `FOR UPDATE SKIP LOCKED` in one transaction, publishes them one by one to the `comments` exchange with publisher confirms (`message-id` = row id, `type`, persistent, not `mandatory` – events nobody subscribes to are dropped instead of piling up), marks the confirmed ones and commits; the first failure stops the batch, and the confirmed part is still committed. A full batch is followed immediately by the next one, otherwise it waits `Outbox:PollInterval` (1 s). Failures back off exponentially (1 s → 30 s) and recreate the channel. `Outbox:PublishTimeout` (10 s) bounds a batch (e.g. a blocked connection). Only rows of known types are claimed (`type = ANY(...)`), so a row this version cannot route (e.g. written by a newer version during a rolling deploy) never takes up batch slots; the cleanup reports how many such rows wait. Cleanup every `Outbox:CleanupInterval` (1 h) deletes rows published more than `Outbox:Retention` (7 days) ago, in batches of 1000, using a partial index on `published_at`. Delivery is at least once (a crash between the confirm and the commit republishes), ordering is not guaranteed. Shutdown budget with the second connection: 20 s + 3 × 2 s + 2 connections × 2 × 3 s = 38 s < compose `stop_grace_period` 45 s.
 - After the E2 review: the channel is opened before the transaction, so no row locks are held while connecting; cleanup has its own error handling and runs even while publishing fails; recording a partly published batch is bounded (5 s) and keeps the original failure in the logs. Deferred: concurrent publishes within a batch (throughput), an outbox-lag metric (age of the oldest unpublished row) for H2, and a two-replica test (H3 verification already covers it in compose).
 
-### Phase F – Real model (ONNX)
+### Phase F – Real model (local LLM via an OpenAI-compatible API)
 
-**F1. Model export script**
-- `scripts/export-model.sh` and `.ps1`: run Python `optimum` in a container to export the HF model (default `citizenlab/distilbert-base-multilingual-cased-toxicity`) to `models/<name>/model.onnx` + `vocab.txt` + `config.json`. `models/` is git-ignored.
-- Done when: the script produces the files.
+Findings from a manual check against LM Studio (`basal-2.0-mini`, `POST /v1/chat/completions` with `response_format: json_schema`): the label was correct for an insulting Polish comment, the response `model` is the requested id, `logprobs` is `null`, one call took about 6 s, and LM Studio enforced the structure and the enum but **not** the numeric range (it answered `"confidence": 60` for a [0, 1] schema). So the model is asked for an integer 0–100, and the worker validates the range itself.
 
-**F2. OnnxToxicityModel**
-- Microsoft.ML.OnnxRuntime + Microsoft.ML.Tokenizers (`BertTokenizer`): truncate to the maximum length, run inference, apply softmax, and map the label from `config.json` (`id2label`). The model version is computed from the file hash at load time. The `InferenceSession` is a singleton.
-- Tests run against the real model and are skipped when the model files are missing. They cover an obviously toxic and an obviously neutral comment in English and Polish.
+**F1. LlmDecisionModel** `[x]`
+- `Model:Provider=Llm` with `Model:Llm` options: `BaseUrl` (e.g. `http://localhost:1234/v1/`), optional `ApiKey`, `Model` (e.g. `basal-2.0-mini`), pinned `Version`, `Instructions` (system prompt, with a default), `Timeout` (60 s), `MaxTokens`.
+- Sends the comment as the user message with `temperature: 0` and a strict JSON schema (`label`: `acceptable` | `unacceptable`, `confidence`: integer 0–100). Validates the response: the `model` must equal the configured one, the content must match the schema and the range – anything else is an error (retried by the consumer, then the DLQ). `ModelPrediction.Confidence` = confidence / 100.
+- The version is computed once (see Model version). The comment content is never logged.
+- Tests with a stubbed `HttpMessageHandler`: request shape, mapping, the version hash, and invalid responses (wrong model, malformed JSON, out-of-range confidence, HTTP errors).
+- Implemented: `LlmDecisionModel` (Infrastructure, `Models/Llm`) uses the named `HttpClient` `llm` from `IHttpClientFactory` (timeout `Model:Llm:Timeout`, redirects disabled). The comment is sent JSON-encoded (`{"comment": ...}`) so it cannot imitate the prompt; the framing, instructions and schema are hashed into the version, e.g. `basal-2.0-mini@2.0+cb3e34c601af`. A confidence is accepted only as a whole number 0–100 (`85.0` passes, `0.6` does not – it suggests another scale), a `finish_reason` other than `stop` is an error, and `LlmResponseException` messages never contain the answer. An `ApiKey` requires https unless the server is local (loopback or `host.docker.internal`). `System.Net.Http.HttpClient` logs at Warning.
+- Live check through the class against LM Studio (5–10 s per comment): labels were right for a polite, an insulting and an injection comment ("ignore previous instructions…" plus an insult got `acceptable`, but with confidence 0–0.5, so ManualReview), while a polite disagreement got `unacceptable` 0–0.5. With the JSON framing the clear cases dropped from 0.95–1.00 to 0.80, i.e. ManualReview at the default thresholds – prompt and threshold tuning is F3.
+- After the F1 review: JSON framing as part of the version, redirects off, https for an `ApiKey`, quieter HttpClient logs, and tests for the validator, timeouts and an answer echoing the comment. Deferred to F2: an unavailable model (see below).
 
-**F3. Wire ONNX into the host**
-- `Model:Provider=Onnx` becomes the default in compose, and the model directory is mounted as a read-only volume. Readiness also reports that the model is loaded.
+**F2. Wire the LLM into the host**
+- Development settings and compose use the LLM provider (`host.docker.internal:1234` from the container, which needs LM Studio's "Serve on Local Network"). Readiness checks that the configured model is listed by `GET /v1/models`.
+- **An unavailable model must not drain the queue into the DLQ** (F1 review, MEDIUM): today every failure takes the counted retries (1 s, 2 s, 3 s), so while LM Studio is closed, restarting or has unloaded the model, each message is dead-lettered within seconds; a model mismatch (another model loaded) never recovers. Treat "model unavailable" (connection errors, 5xx/429, timeouts, a model mismatch) separately from bad answers: requeue without counting after a back-off, or pause consuming while the model check fails. Bad answers (`LlmResponseException`) keep the counted retries and then the DLQ. Also check how LM Studio answers the first call after an idle unload (JIT loading: an error or a long delay beyond the timeout).
 - Manual end-to-end check (see Verification).
 
-**F4. Polish quality check**
-- A small labelled sample of Polish comments in `tests/data/`, plus a test or console report showing the decision distribution and accuracy at the default thresholds.
-- Outcome: either keep the model and tune the thresholds, or pick a different model. **Decision point for the user.**
+**F3. Polish quality check**
+- A small labelled sample of Polish comments in `tests/data/`, plus a report (opt-in test or console tool, run against LM Studio) showing the decision distribution, accuracy and latency at the default thresholds.
+- Check the loaded context window against `Consumer:MaxContentLength` (10 000 characters): LM Studio often loads models with 4096 tokens, so a long comment may be rejected (400) or truncated (`finish_reason: length`), which is deterministic and burns all retries before the DLQ.
+- Outcome: tune the instructions and thresholds, or pick a different model. **Decision point for the user.**
 
 ### Phase G – Jev alternative
 
@@ -204,10 +210,30 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - Document the RabbitMQ policies to use instead of queue arguments for tuning existing queues (delivery limit, dead-letter strategy). Note for operators: `x-overflow: reject-publish` only matters once a max-length is set – then publishers get nacks and must use publisher confirms. The DLQ is a quorum queue with RabbitMQ 4's implicit delivery limit (20) and no dead-letter target, so a message that crashes 20 DLQ consumers in a row would be dropped; set an explicit limit via policy if DLQ replay tooling is introduced.
 - After a broker-side consumer cancel (e.g. the input queue was deleted), the D2 recreate loop retries `BasicConsume` until the queue exists again, and only readiness reports the problem. Decide whether the loop should re-declare the topology, or whether queue deletion stays an operator error (D2 review).
 
+### Phase I – Optional local ONNX classifier
+
+Deferred: the default model is the LLM (phase F). Kept for a non-generative alternative (faster, calibrated probabilities).
+
+**I1. Model export script**
+- `scripts/export-model.sh` and `.ps1`: run Python `optimum` in a container to export the HF model (default `citizenlab/distilbert-base-multilingual-cased-toxicity`) to `models/<name>/model.onnx` + `vocab.txt` + `config.json`. `models/` is git-ignored.
+- Done when: the script produces the files.
+
+**I2. OnnxToxicityModel**
+- Microsoft.ML.OnnxRuntime + Microsoft.ML.Tokenizers (`BertTokenizer`): truncate to the maximum length, run inference, apply softmax, and map the label from `config.json` (`id2label`). The model version is computed from the file hash at load time. The `InferenceSession` is a singleton.
+- Tests run against the real model and are skipped when the model files are missing. They cover an obviously toxic and an obviously neutral comment in English and Polish.
+
+**I3. Wire ONNX into the host**
+- `Model:Provider=Onnx` can be selected in compose, and the model directory is mounted as a read-only volume. Readiness also reports that the model is loaded.
+- Manual end-to-end check (see Verification).
+
+**I4. Polish quality check**
+- A small labelled sample of Polish comments in `tests/data/`, plus a test or console report showing the decision distribution and accuracy at the default thresholds.
+- Outcome: either keep the model and tune the thresholds, or pick a different model. **Decision point for the user.**
+
 ---
 
-## Verification (end-to-end, after F3)
-1. `scripts/export-model.sh`
+## Verification (end-to-end, after F2)
+1. LM Studio: load `basal-2.0-mini`, start the server on port 1234 with "Serve on Local Network".
 2. `docker compose up --build`
 3. RabbitMQ UI at http://localhost:15672: publish a `CommentCreated` JSON message to the `comments` exchange with routing key `comment.created`.
 4. `SELECT * FROM comment_analyses;` shows the decision, confidence and model_version.
@@ -215,6 +241,8 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 6. `curl http://localhost:7461/health/ready` returns Healthy. A malformed message lands in the DLQ.
 
 ## Open points
-- Quality of the ONNX model on Polish comments (F4).
+- Quality of the LLM on Polish comments, and how well its self-reported confidence works with the thresholds (F3).
+- Prompt injection: a comment can try to steer the LLM. The answer is limited to the schema, so at worst a comment gets the wrong label; F3 should include such samples.
+- Throughput: about 6 s per comment on one LM Studio instance.
 - Threshold values (0.85 / 0.90 are starting points).
 - Whether the comment service should consume `CommentAnalyzed`, and what payload it needs beyond the current one.
