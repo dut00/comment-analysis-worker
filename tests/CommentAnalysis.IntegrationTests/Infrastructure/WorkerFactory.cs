@@ -5,7 +5,7 @@ namespace CommentAnalysis.IntegrationTests.Infrastructure;
 
 /// <summary>
 /// Hosts the worker in-process with settings that need no external services: a static model
-/// and a connection string that is never opened (migrations on startup are disabled).
+/// and a connection string to a closed port (migrations on startup are disabled).
 /// Individual settings can be overridden per test.
 /// </summary>
 internal sealed class WorkerFactory : WebApplicationFactory<Program>
@@ -13,7 +13,8 @@ internal sealed class WorkerFactory : WebApplicationFactory<Program>
     private static readonly Dictionary<string, string?> Defaults = new()
     {
         ["Model:Provider"] = "Static",
-        ["Database:ConnectionString"] = "Host=localhost;Database=unused;Username=unused;Password=unused",
+        // Closed port: fails fast if anything tries to connect (e.g. the readiness check).
+        ["Database:ConnectionString"] = "Host=127.0.0.1;Port=1;Database=unused;Username=unused;Password=unused;Timeout=2",
         ["Database:MigrateOnStartup"] = "false",
     };
 

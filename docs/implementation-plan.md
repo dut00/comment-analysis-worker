@@ -110,8 +110,9 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - Integration tests on a Postgres Testcontainer: save, then detect the duplicate. Also check that the unique constraint holds under a race.
 - `IAnalysisStore` lives in Core; `EfAnalysisStore` (Infrastructure) maps a unique-violation on `ux_comment_analyses_comment_id_model_version` to `SaveOutcome.AlreadyExists` instead of throwing, so a lost race is not an error. Tests share one Postgres container per collection (`PostgresFixture`) and isolate data with fresh comment ids; the race test runs 8 concurrent saves.
 
-**C3. Readiness check for Postgres**
+**C3. Readiness check for Postgres** `[x]`
 - `/health/ready` reports Postgres status.
+- EF Core `AddDbContextCheck` tagged `ready`. `/health/ready` returns 503 when Postgres is down while `/health/live` stays 200, so a database outage takes the worker out of rotation without restarting it. The container `HEALTHCHECK` keeps probing liveness only.
 
 ### Phase D – Messaging (RabbitMQ)
 
