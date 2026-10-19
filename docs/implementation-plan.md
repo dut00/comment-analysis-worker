@@ -74,7 +74,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - Unit tests: each outcome, exact boundary values, and invalid options.
 - Done when: all policy tests pass.
 
-**A4. Model abstraction and analyzer**
+**A4. Model abstraction and analyzer** `[x]`
 - `IDecisionModel` (`ModelInfo Info`, `Task<ModelPrediction> EvaluateAsync(string content, CancellationToken)`).
 - `CommentAnalyzer`, which calls the model and the policy and returns an `AnalysisResult` (decision, confidence, model info, duration).
 - A `FakeDecisionModel` in the test project.
