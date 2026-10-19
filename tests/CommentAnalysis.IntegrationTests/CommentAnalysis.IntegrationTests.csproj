@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\CommentAnalysis.Worker\CommentAnalysis.Worker.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/CommentAnalysis.Core/CommentAnalysis.Core.csproj" />
+    <Project Path="src/CommentAnalysis.Infrastructure/CommentAnalysis.Infrastructure.csproj" />
+    <Project Path="src/CommentAnalysis.Worker/CommentAnalysis.Worker.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/CommentAnalysis.Core.Tests/CommentAnalysis.Core.Tests.csproj" />
+    <Project Path="tests/CommentAnalysis.IntegrationTests/CommentAnalysis.IntegrationTests.csproj" />
+  </Folder>
+</Solution>
