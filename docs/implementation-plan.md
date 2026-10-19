@@ -80,9 +80,9 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - A `FakeDecisionModel` in the test project.
 - Done when: the analyzer unit tests pass.
 
-**A5. Message contracts**
-- `CommentCreated` and `CommentAnalyzed` records, plus shared `JsonSerializerOptions` (camelCase, enums as strings).
-- Tests: serialization round-trip and the shape of the JSON.
+**A5. Message contracts** `[x]`
+- `CommentCreated` and `CommentAnalyzed` records (all properties `required`), `CommentAnalyzed.From(comment, result)`, and `MessageSerializer` with shared options: camelCase, enums as camelCase strings (integers rejected), nullable annotations respected, unknown properties ignored.
+- Tests: round-trip, JSON shape, and malformed payloads (missing or null fields, bad GUID, invalid JSON) throwing `JsonException` – the basis for DLQ routing in D3.
 
 ### Phase B – Runnable host
 
