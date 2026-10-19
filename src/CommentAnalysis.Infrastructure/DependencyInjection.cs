@@ -121,7 +121,10 @@ public static partial class DependencyInjection
                 return new StaticDecisionModel(options.Static);
 
             case ModelProvider.Llm:
-                return new LlmDecisionModel(serviceProvider.GetRequiredService<IHttpClientFactory>(), options.Llm);
+                return new LlmDecisionModel(
+                    serviceProvider.GetRequiredService<IHttpClientFactory>(),
+                    options.Llm,
+                    serviceProvider.GetRequiredService<TimeProvider>());
 
             default:
                 throw new InvalidOperationException($"Unsupported model provider '{options.Provider}'.");
