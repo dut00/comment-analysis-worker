@@ -150,11 +150,13 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - Test: both rows exist after processing, or neither does.
 - Implemented: `IAnalysisStore.SaveAsync` keeps its signature; `EfAnalysisStore` adds the analysis row and an `OutboxMessageEntity` (`id` UUIDv7 – later the AMQP message id, `type` = message type name, `payload` jsonb, `created_at` = analysis time, `published_at` null) in one `SaveChanges`, i.e. one transaction. A duplicate analysis rolls back both rows, so a redelivery never enqueues a second event; a test appends a failing statement after both inserts and checks that neither row remains. `type` is an explicit constant (`CommentAnalyzed.MessageType`), not the CLR class name. A partial index on `created_at WHERE published_at IS NULL` serves the publisher. Cleanup of published rows is part of E2.
 
-**E2. Outbox publisher**
+**E2. Outbox publisher** `[x]`
 - A `BackgroundService` that polls unpublished rows (`FOR UPDATE SKIP LOCKED`, so multiple replicas are safe), publishes with publisher confirms and marks the rows as published.
 - Use a separate AMQP connection for publishing (distinct `ClientProvidedName`): RabbitMQ blocks publishing connections under flow control or resource alarms, which must not stall the consumer's acks. Make `RabbitMqConnection` support named connections ("consumer", "publisher") before this step.
 - End-to-end integration test: `CommentCreated` in → `CommentAnalyzed` out.
 - Notes from the E1 review: the payload is jsonb, so key order, whitespace and number formatting are normalized – publish it as is, and consumers must not rely on exact bytes (deduplicate on the message id). Map `type` to a routing key explicitly and fail loudly on an unknown type. Clean up published rows (e.g. delete after a retention period; may need an index on `published_at`).
+- Implemented: `RabbitMqConnection` is named (`ClientProvidedName` = `{ClientName}:{name}`); the consumer connection is resolved without a key and the publisher one as a keyed singleton (`publisher`). `OutboxPublisher` (Worker) claims up to `Outbox:BatchSize` (100) rows ordered by `created_at` with `FOR UPDATE SKIP LOCKED` in one transaction, publishes them one by one to the `comments` exchange with publisher confirms (`message-id` = row id, `type`, persistent, not `mandatory` – events nobody subscribes to are dropped instead of piling up), marks the confirmed ones and commits; the first failure stops the batch, and the confirmed part is still committed. A full batch is followed immediately by the next one, otherwise it waits `Outbox:PollInterval` (1 s). Failures back off exponentially (1 s → 30 s) and recreate the channel. `Outbox:PublishTimeout` (10 s) bounds a batch (e.g. a blocked connection). Only rows of known types are claimed (`type = ANY(...)`), so a row this version cannot route (e.g. written by a newer version during a rolling deploy) never takes up batch slots; the cleanup reports how many such rows wait. Cleanup every `Outbox:CleanupInterval` (1 h) deletes rows published more than `Outbox:Retention` (7 days) ago, in batches of 1000, using a partial index on `published_at`. Delivery is at least once (a crash between the confirm and the commit republishes), ordering is not guaranteed. Shutdown budget with the second connection: 20 s + 3 × 2 s + 2 connections × 2 × 3 s = 38 s < compose `stop_grace_period` 45 s.
+- After the E2 review: the channel is opened before the transaction, so no row locks are held while connecting; cleanup has its own error handling and runs even while publishing fails; recording a partly published batch is bounded (5 s) and keeps the original failure in the logs. Deferred: concurrent publishes within a batch (throughput), an outbox-lag metric (age of the oldest unpublished row) for H2, and a two-replica test (H3 verification already covers it in compose).
 
 ### Phase F – Real model (ONNX)
 
@@ -188,7 +190,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 ### Phase H – Production readiness
 
 **H1. Observability**
-- Metrics through `System.Diagnostics.Metrics`: decisions by type, inference duration, processing failures. Optional OpenTelemetry export (OTLP) behind config.
+- Metrics through `System.Diagnostics.Metrics`: decisions by type, inference duration, processing failures, outbox lag (age of the oldest unpublished row) and retries. Optional OpenTelemetry export (OTLP) behind config.
 
 **H2. Graceful shutdown and scaling**
 - Shutdown behaviour itself is implemented in D2; here verify it under load: `docker compose stop` during processing, and run compose with 2 worker replicas and confirm there are no duplicates and no lost events.
