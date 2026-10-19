@@ -35,6 +35,29 @@ public class ReadinessTests(PostgresFixture postgres, RabbitMqFixture rabbitMq)
     }
 
     [Fact]
+    public async Task Ready_ReturnsServiceUnavailable_WhenTheLlmIsUnreachable_WhileLiveStaysOk()
+    {
+        await using var factory = new WorkerFactory(
+        [
+            ("Database:ConnectionString", postgres.ConnectionString),
+            .. rabbitMq.WorkerSettings(RabbitMqFixture.CreateTopologySettings()),
+            ("Model:Provider", "Llm"),
+            // Closed port.
+            ("Model:Llm:BaseUrl", "http://127.0.0.1:1/v1/"),
+            ("Model:Llm:Model", "basal-2.0-mini"),
+            ("Model:Llm:Version", "2.0"),
+        ]);
+        using var client = factory.CreateClient();
+        await WaitForTopologyAsync(factory);
+
+        var ready = await client.GetAsync(ReadyUri);
+        var live = await client.GetAsync(LiveUri);
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, ready.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, live.StatusCode);
+    }
+
+    [Fact]
     public async Task Ready_ReturnsServiceUnavailable_WhenPostgresIsUnreachable_WhileLiveStaysOk()
     {
         // WorkerFactory's default connection string points at a closed port.

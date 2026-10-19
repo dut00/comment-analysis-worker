@@ -202,6 +202,23 @@ public class CommentCreatedConsumerTests(PostgresFixture postgres, RabbitMqFixtu
     }
 
     [Fact]
+    public async Task UnavailableModel_DoesNotUseUpRetries_AndTheMessageIsProcessedOnceItIsBack()
+    {
+        var topology = RabbitMqFixture.CreateTopologySettings();
+        var model = new FailingDecisionModel(failures: 2, () => new ModelUnavailableException("Simulated outage."));
+
+        // No retries at all: a counted failure would dead-letter the message at once.
+        await using var worker = await StartWorkerAsync(topology, model, ("Consumer:MaxRetries", "0"));
+        var comment = CreateComment();
+
+        await PublishAsync(topology, MessageSerializer.Serialize(comment));
+
+        await WaitForAnalysisAsync(comment.CommentId);
+        Assert.Equal(3, model.Calls);
+        await AssertQueuesAsync(topology, input: 0, deadLetter: 0);
+    }
+
+    [Fact]
     public async Task RetryCopy_IsNotRoutedToQueuesNamedInTheCcHeader()
     {
         var topology = RabbitMqFixture.CreateTopologySettings();

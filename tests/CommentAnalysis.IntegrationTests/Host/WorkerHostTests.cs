@@ -56,7 +56,8 @@ public class WorkerHostTests
     [Fact]
     public async Task Startup_Fails_WhenLlmIsNotConfigured()
     {
-        await using var factory = new WorkerFactory(("Model:Provider", "Llm"));
+        // Production: only the shipped appsettings.json applies, which has no LLM settings.
+        await using var factory = new WorkerFactory(("Model:Provider", "Llm")) { Environment = "Production" };
 
         var exception = Assert.Throws<OptionsValidationException>(() => factory.CreateClient());
 

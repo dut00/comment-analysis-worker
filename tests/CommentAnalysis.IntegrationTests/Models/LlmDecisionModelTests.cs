@@ -4,6 +4,8 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using CommentAnalysis.Core.Models;
 using CommentAnalysis.Infrastructure.Models.Llm;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Time.Testing;
 
 namespace CommentAnalysis.IntegrationTests.Models;
 
@@ -96,20 +98,38 @@ public class LlmDecisionModelTests
     }
 
     [Fact]
-    public async Task Timeout_Propagates()
+    public async Task Timeout_MeansTheModelIsUnavailable()
     {
-        // The consumer retries it like any other failure: only its own token's cancellation means shutdown.
         var model = CreateModel(new StubHandler(new TaskCanceledException("timeout", new TimeoutException())));
 
-        await Assert.ThrowsAsync<TaskCanceledException>(() => model.EvaluateAsync(Comment, CancellationToken.None));
+        await Assert.ThrowsAsync<ModelUnavailableException>(() => model.EvaluateAsync(Comment, CancellationToken.None));
     }
 
     [Fact]
-    public async Task AnswerFromAnotherModel_Throws()
+    public async Task UnreachableServer_MeansTheModelIsUnavailable()
+    {
+        var model = CreateModel(new StubHandler(new HttpRequestException("Connection refused")));
+
+        await Assert.ThrowsAsync<ModelUnavailableException>(() => model.EvaluateAsync(Comment, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task CancellationByTheCaller_IsNotUnavailability()
+    {
+        // Only the caller's token means shutdown; the consumer must see it as such.
+        using var cancelled = new CancellationTokenSource();
+        await cancelled.CancelAsync();
+        var model = CreateModel(new StubHandler(new TaskCanceledException()));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => model.EvaluateAsync(Comment, cancelled.Token));
+    }
+
+    [Fact]
+    public async Task AnswerFromAnotherModel_MeansTheModelIsUnavailable()
     {
         var model = CreateModel(new StubHandler(Completion("""{"label":"acceptable","confidence":90}""", model: "qwen/qwen3-4b-thinking-2507")));
 
-        var exception = await Assert.ThrowsAsync<LlmResponseException>(() => model.EvaluateAsync(Comment, CancellationToken.None));
+        var exception = await Assert.ThrowsAsync<ModelUnavailableException>(() => model.EvaluateAsync(Comment, CancellationToken.None));
 
         Assert.Contains("qwen/qwen3-4b-thinking-2507", exception.Message, StringComparison.Ordinal);
     }
@@ -135,14 +155,138 @@ public class LlmDecisionModelTests
         await Assert.ThrowsAsync<LlmResponseException>(() => model.EvaluateAsync(Comment, CancellationToken.None));
     }
 
-    [Fact]
-    public async Task ErrorStatus_Throws()
+    [Theory]
+    [InlineData(HttpStatusCode.Found)]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    [InlineData(HttpStatusCode.NotFound)]
+    [InlineData(HttpStatusCode.RequestTimeout)]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    [InlineData(HttpStatusCode.ServiceUnavailable)]
+    public async Task ErrorStatus_WhileTheServerFailsToo_MeansTheModelIsUnavailable(HttpStatusCode status)
     {
-        var model = CreateModel(new StubHandler("""{"error":"model not loaded"}""", HttpStatusCode.ServiceUnavailable));
+        var model = CreateModel(new StubHandler("""{"error":"model not loaded"}""", status));
+
+        var exception = await Assert.ThrowsAsync<ModelUnavailableException>(() => model.EvaluateAsync(Comment, CancellationToken.None));
+
+        Assert.Equal(status, Assert.IsType<HttpRequestException>(exception.InnerException).StatusCode);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    [InlineData(HttpStatusCode.ServiceUnavailable)]
+    public async Task ErrorStatus_WhileTheServerListsTheModel_IsAFailureOfTheComment(HttpStatusCode status)
+    {
+        // E.g. a server error caused by this comment's prompt: counted retries, then the DLQ – not an endless wait.
+        var model = CreateModel(new StubHandler("""{"error":"failed to process the prompt"}""", status) { ModelsResponse = """{"object":"list","data":[{"id":"basal-2.0-mini"}]}""" });
+
+        var exception = await Assert.ThrowsAsync<LlmResponseException>(() => model.EvaluateAsync(Comment, CancellationToken.None));
+
+        Assert.Equal(status, Assert.IsType<HttpRequestException>(exception.InnerException).StatusCode);
+    }
+
+    [Fact]
+    public async Task Timeout_WhileTheServerListsTheModel_IsAFailureOfTheComment()
+    {
+        var model = CreateModel(new StubHandler(new TaskCanceledException("timeout", new TimeoutException())) { ModelsResponse = """{"object":"list","data":[{"id":"basal-2.0-mini"}]}""" });
+
+        await Assert.ThrowsAsync<LlmResponseException>(() => model.EvaluateAsync(Comment, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Health_IsUnhealthy_AfterACommentFoundTheModelUnavailable_UntilTheModelAnswersAgain()
+    {
+        // Another model answering is not visible in the model list, so readiness relies on what comments saw.
+        var handler = new StubHandler(Completion("""{"label":"acceptable","confidence":90}""", model: "openai/gpt-oss-20b")) { ModelsResponse = """{"object":"list","data":[{"id":"basal-2.0-mini"}]}""" };
+        var model = CreateModel(handler);
+        Assert.Equal(HealthStatus.Healthy, (await model.CheckHealthAsync(CancellationToken.None)).Status);
+
+        await Assert.ThrowsAsync<ModelUnavailableException>(() => model.EvaluateAsync(Comment, CancellationToken.None));
+        var unhealthy = await model.CheckHealthAsync(CancellationToken.None);
+
+        handler.Response = Completion("""{"label":"acceptable","confidence":90}""");
+        await model.EvaluateAsync(Comment, CancellationToken.None);
+        var healthy = await model.CheckHealthAsync(CancellationToken.None);
+
+        Assert.Equal(HealthStatus.Unhealthy, unhealthy.Status);
+        Assert.Contains("openai/gpt-oss-20b", unhealthy.Description, StringComparison.Ordinal);
+        Assert.Equal(HealthStatus.Healthy, healthy.Status);
+    }
+
+    [Fact]
+    public async Task Health_ForgetsAnUnavailableModel_AfterAMinute()
+    {
+        var time = new FakeTimeProvider();
+        var model = CreateModel(
+            new StubHandler(Completion("""{"label":"acceptable","confidence":90}""", model: "openai/gpt-oss-20b")) { ModelsResponse = """{"object":"list","data":[{"id":"basal-2.0-mini"}]}""" },
+            timeProvider: time);
+        await Assert.ThrowsAsync<ModelUnavailableException>(() => model.EvaluateAsync(Comment, CancellationToken.None));
+
+        time.Advance(TimeSpan.FromSeconds(59));
+        var stillUnhealthy = await model.CheckHealthAsync(CancellationToken.None);
+        time.Advance(TimeSpan.FromSeconds(1));
+        var healthy = await model.CheckHealthAsync(CancellationToken.None);
+
+        Assert.Equal(HealthStatus.Unhealthy, stillUnhealthy.Status);
+        Assert.Equal(HealthStatus.Healthy, healthy.Status);
+    }
+
+    [Fact]
+    public async Task BadRequest_IsAFailureOfTheComment()
+    {
+        // E.g. a comment beyond the context window: retried a few times, then dead-lettered.
+        var model = CreateModel(new StubHandler("""{"error":"context length exceeded"}""", HttpStatusCode.BadRequest));
 
         var exception = await Assert.ThrowsAsync<HttpRequestException>(() => model.EvaluateAsync(Comment, CancellationToken.None));
 
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, exception.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, exception.StatusCode);
+    }
+
+    [Fact]
+    public async Task Health_IsHealthy_WhenTheModelIsListed()
+    {
+        var handler = new StubHandler("""{"object":"list","data":[{"id":"qwen/qwen3-4b-thinking-2507"},{"id":"basal-2.0-mini"}]}""");
+
+        var result = await CreateModel(handler, options => options.ApiKey = "secret").CheckHealthAsync(CancellationToken.None);
+
+        Assert.Equal(HealthStatus.Healthy, result.Status);
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Get, request.Method);
+        Assert.Equal(new Uri("http://llm.test/v1/models"), request.Uri);
+        Assert.Equal("Bearer secret", request.Authorization);
+    }
+
+    [Fact]
+    public async Task Health_IsUnhealthy_WhenTheModelIsNotListed()
+    {
+        var handler = new StubHandler("""{"object":"list","data":[{"id":"openai/gpt-oss-20b"}]}""");
+
+        var result = await CreateModel(handler).CheckHealthAsync(CancellationToken.None);
+
+        Assert.Equal(HealthStatus.Unhealthy, result.Status);
+        Assert.Contains("basal-2.0-mini", result.Description, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("""{"error":"down"}""", HttpStatusCode.ServiceUnavailable)]
+    [InlineData("""{"error":"unauthorized"}""", HttpStatusCode.Unauthorized)]
+    [InlineData("<html>", HttpStatusCode.OK)]
+    public async Task Health_IsUnhealthy_OnErrors(string response, HttpStatusCode status)
+    {
+        var result = await CreateModel(new StubHandler(response, status)).CheckHealthAsync(CancellationToken.None);
+
+        Assert.Equal(HealthStatus.Unhealthy, result.Status);
+    }
+
+    [Fact]
+    public async Task Health_IsUnhealthy_WhenTheServerIsUnreachable()
+    {
+        var model = CreateModel(new StubHandler(new HttpRequestException("Connection refused")));
+
+        var result = await model.CheckHealthAsync(CancellationToken.None);
+
+        Assert.Equal(HealthStatus.Unhealthy, result.Status);
     }
 
     [Fact]
@@ -186,7 +330,10 @@ public class LlmDecisionModelTests
         Assert.Equal(new Uri("http://llm.test/v1/chat/completions"), Assert.Single(handler.Requests).Uri);
     }
 
-    private static LlmDecisionModel CreateModel(StubHandler handler, Action<LlmModelOptions>? configure = null)
+    private static LlmDecisionModel CreateModel(
+        StubHandler handler,
+        Action<LlmModelOptions>? configure = null,
+        TimeProvider? timeProvider = null)
     {
         var options = new LlmModelOptions
         {
@@ -195,7 +342,7 @@ public class LlmDecisionModelTests
             Version = "2.0",
         };
         configure?.Invoke(options);
-        return new LlmDecisionModel(new StubHttpClientFactory(handler), options);
+        return new LlmDecisionModel(new StubHttpClientFactory(handler), options, timeProvider);
     }
 
     private static string Completion(string answer, string model = "basal-2.0-mini", string finishReason = "stop") =>
@@ -212,19 +359,27 @@ public class LlmDecisionModelTests
 
     private sealed record RecordedRequest(HttpMethod Method, Uri? Uri, string? Authorization, string Body);
 
+    /// <summary>
+    /// Answers every request with the same response or exception, except <c>GET models</c> when
+    /// <see cref="ModelsResponse"/> is set.
+    /// </summary>
     private sealed class StubHandler : HttpMessageHandler
     {
-        private readonly string _response = string.Empty;
         private readonly HttpStatusCode _status = HttpStatusCode.OK;
         private readonly Exception? _exception;
 
         public StubHandler(string response, HttpStatusCode status = HttpStatusCode.OK)
         {
-            _response = response;
+            Response = response;
             _status = status;
         }
 
         public StubHandler(Exception exception) => _exception = exception;
+
+        public string Response { get; set; } = string.Empty;
+
+        /// <summary>The model list, answered with 200 regardless of the other settings.</summary>
+        public string? ModelsResponse { get; init; }
 
         public List<RecordedRequest> Requests { get; } = [];
 
@@ -236,12 +391,17 @@ public class LlmDecisionModelTests
                 request.Headers.Authorization?.ToString(),
                 request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(cancellationToken)));
 
+            if (ModelsResponse is not null && request.RequestUri!.AbsolutePath.EndsWith("/models", StringComparison.Ordinal))
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(ModelsResponse, Encoding.UTF8, "application/json") };
+            }
+
             if (_exception is not null)
             {
                 throw _exception;
             }
 
-            return new HttpResponseMessage(_status) { Content = new StringContent(_response, Encoding.UTF8, "application/json") };
+            return new HttpResponseMessage(_status) { Content = new StringContent(Response, Encoding.UTF8, "application/json") };
         }
     }
 
