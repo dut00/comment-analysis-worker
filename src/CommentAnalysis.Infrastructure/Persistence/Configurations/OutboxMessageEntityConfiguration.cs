@@ -20,5 +20,10 @@ internal sealed class OutboxMessageEntityConfiguration : IEntityTypeConfiguratio
         builder.HasIndex(e => e.CreatedAt)
             .HasDatabaseName(OutboxMessageEntity.UnpublishedIndex)
             .HasFilter("published_at IS NULL");
+
+        // Cleanup deletes published rows older than the retention period.
+        builder.HasIndex(e => e.PublishedAt)
+            .HasDatabaseName(OutboxMessageEntity.PublishedIndex)
+            .HasFilter("published_at IS NOT NULL");
     }
 }

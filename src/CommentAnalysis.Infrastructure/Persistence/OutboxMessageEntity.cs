@@ -11,6 +11,7 @@ public sealed class OutboxMessageEntity
 {
     public const int TypeMaxLength = 100;
     public const string UnpublishedIndex = "ix_outbox_messages_unpublished";
+    public const string PublishedIndex = "ix_outbox_messages_published_at";
 
     /// <summary>Time-ordered (UUIDv7); also used as the AMQP message id, so consumers can deduplicate.</summary>
     public Guid Id { get; set; }

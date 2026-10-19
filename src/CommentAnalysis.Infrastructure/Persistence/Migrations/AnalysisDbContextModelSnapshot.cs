@@ -122,6 +122,10 @@ namespace CommentAnalysis.Infrastructure.Persistence.Migrations
                         .HasDatabaseName("ix_outbox_messages_unpublished")
                         .HasFilter("published_at IS NULL");
 
+                    b.HasIndex("PublishedAt")
+                        .HasDatabaseName("ix_outbox_messages_published_at")
+                        .HasFilter("published_at IS NOT NULL");
+
                     b.ToTable("outbox_messages", (string)null);
                 });
 #pragma warning restore 612, 618
