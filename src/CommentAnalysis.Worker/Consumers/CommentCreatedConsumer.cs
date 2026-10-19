@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using CommentAnalysis.Core.Analysis;
 using CommentAnalysis.Core.Messages;
+using CommentAnalysis.Core.Models;
 using CommentAnalysis.Infrastructure.Messaging;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
@@ -71,6 +72,10 @@ internal sealed partial class CommentCreatedConsumer(
     private volatile bool _stopping;
     private volatile bool _isConsuming;
     private int _consumerStarts;
+
+    // Back-off while the model is unavailable, shared by all handlers (each failure doubles it); reset when the model
+    // answers again.
+    private long _modelUnavailableDelayTicks = InitialRetryDelay.Ticks;
 
     private IChannel? _channel;
     private string? _consumerTag;
@@ -398,11 +403,22 @@ internal sealed partial class CommentCreatedConsumer(
             LogProcessingAborted(logger);
             return;
         }
+        catch (ModelUnavailableException exception)
+        {
+            await RequeueWhileModelUnavailableAsync(channel, delivery, exception).ConfigureAwait(false);
+            return;
+        }
         catch (Exception exception)
         {
-            // E.g. the database or the model is unavailable.
+            // E.g. the database is unavailable, or the model gave an invalid answer.
             await RetryOrDeadLetterAsync(channel, delivery, exception).ConfigureAwait(false);
             return;
+        }
+
+        if (result.Analysis is not null)
+        {
+            // The model answered (a duplicate is skipped without asking it).
+            Interlocked.Exchange(ref _modelUnavailableDelayTicks, InitialRetryDelay.Ticks);
         }
 
         // Not cancellable: the analysis is committed, so a lost ack only causes a harmless redelivery.
@@ -417,6 +433,43 @@ internal sealed partial class CommentCreatedConsumer(
         {
             LogAlreadyAnalyzed(logger, result.Model.Version);
         }
+    }
+
+    /// <summary>
+    /// Returns a message to the queue, uncounted, after a back-off (1 s doubling to
+    /// <see cref="ConsumerOptions.MaxRetryDelay"/>). The comment is not at fault, so it must not use up its retries or
+    /// reach the DLQ: while the model is down the worker effectively pauses, and readiness reports the model.
+    /// </summary>
+    /// <remarks>
+    /// Unlike <see cref="RetryOrDeadLetterAsync"/>, an endless loop is intended here: the messages wait for the model.
+    /// A nack with requeue does not count towards <c>x-delivery-limit</c> in RabbitMQ 4.
+    /// </remarks>
+    private async Task RequeueWhileModelUnavailableAsync(IChannel channel, BasicDeliverEventArgs delivery, ModelUnavailableException exception)
+    {
+        // Doubled atomically, so concurrent handlers do not lose a reset made by a success in between.
+        long delayTicks;
+        do
+        {
+            delayTicks = Interlocked.Read(ref _modelUnavailableDelayTicks);
+        }
+        while (Interlocked.CompareExchange(
+            ref _modelUnavailableDelayTicks, Math.Min(delayTicks * 2, ConsumerOptions.MaxRetryDelay.Ticks), delayTicks) != delayTicks);
+
+        var delay = TimeSpan.FromTicks(delayTicks);
+        LogModelUnavailable(logger, exception, delay);
+
+        try
+        {
+            await Task.Delay(delay, timeProvider, _stopRequested.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Shutdown: the message returns to the queue when the channel closes.
+            return;
+        }
+
+        await SettleAsync(() => channel.BasicNackAsync(delivery.DeliveryTag, multiple: false, requeue: true, CancellationToken.None))
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -581,6 +634,9 @@ internal sealed partial class CommentCreatedConsumer(
 
     [LoggerMessage(EventId = 304, Level = LogLevel.Warning, Message = "Processing the comment failed; scheduling retry {Retry} of {MaxRetries}")]
     private static partial void LogProcessingFailed(ILogger logger, Exception exception, int retry, int maxRetries);
+
+    [LoggerMessage(EventId = 318, Level = LogLevel.Warning, Message = "The model is unavailable; returning the message to the queue in {Delay}")]
+    private static partial void LogModelUnavailable(ILogger logger, Exception exception, TimeSpan delay);
 
     [LoggerMessage(EventId = 316, Level = LogLevel.Error, Message = "Processing the comment failed after {Retries} retries; rejected to the dead-letter queue")]
     private static partial void LogRetriesExhausted(ILogger logger, Exception exception, int retries);
