@@ -67,6 +67,38 @@ public class CommentCreatedConsumerTests(PostgresFixture postgres, RabbitMqFixtu
     }
 
     [Fact]
+    public async Task OversizedMessage_IsDeadLettered_WithoutBeingProcessed()
+    {
+        var topology = RabbitMqFixture.CreateTopologySettings();
+        await using var worker = await StartWorkerAsync(topology, ("Consumer:MaxMessageBytes", "1024"), ("Consumer:MaxContentLength", "1024"));
+        var oversized = CreateComment() with { Content = new string('a', 2000) };
+        var comment = CreateComment();
+
+        await PublishAsync(topology, MessageSerializer.Serialize(oversized));
+        await PublishAsync(topology, MessageSerializer.Serialize(comment));
+
+        await WaitForAnalysisAsync(comment.CommentId);
+        await AssertQueuesAsync(topology, input: 0, deadLetter: 1);
+        Assert.Equal(0, await CountAnalysesAsync(oversized.CommentId));
+    }
+
+    [Fact]
+    public async Task TooLongContent_IsDeadLettered_WithoutReachingTheModel()
+    {
+        var topology = RabbitMqFixture.CreateTopologySettings();
+        await using var worker = await StartWorkerAsync(topology, ("Consumer:MaxContentLength", "10"));
+        var tooLong = CreateComment() with { Content = "eleven char" };
+        var comment = CreateComment() with { Content = "ten chars!" };
+
+        await PublishAsync(topology, MessageSerializer.Serialize(tooLong));
+        await PublishAsync(topology, MessageSerializer.Serialize(comment));
+
+        await WaitForAnalysisAsync(comment.CommentId);
+        await AssertQueuesAsync(topology, input: 0, deadLetter: 1);
+        Assert.Equal(0, await CountAnalysesAsync(tooLong.CommentId));
+    }
+
+    [Fact]
     public async Task Shutdown_LetsInFlightMessageFinish_AndAcksIt()
     {
         var topology = RabbitMqFixture.CreateTopologySettings();
@@ -131,14 +163,57 @@ public class CommentCreatedConsumerTests(PostgresFixture postgres, RabbitMqFixtu
     }
 
     [Fact]
-    public async Task TransientFailure_RequeuesMessage_AndItIsProcessedOnRetry()
+    public async Task TransientFailure_IsRetried_AndTheMessageIsProcessed()
     {
         var topology = RabbitMqFixture.CreateTopologySettings();
-        var model = new FailingOnceDecisionModel();
-        await using var worker = await StartWorkerAsync(topology, model);
+        var model = new FailingDecisionModel(failures: 1);
+        await using var worker = await StartWorkerAsync(topology, model, ("Consumer:RetryDelay", "00:00:00"));
         var comment = CreateComment();
 
         await PublishAsync(topology, MessageSerializer.Serialize(comment));
+
+        await WaitForAnalysisAsync(comment.CommentId);
+        Assert.Equal(2, model.Calls);
+        await AssertQueuesAsync(topology, input: 0, deadLetter: 0);
+    }
+
+    [Fact]
+    public async Task PersistentFailure_IsDeadLettered_AfterMaxRetries()
+    {
+        var topology = RabbitMqFixture.CreateTopologySettings();
+        var model = new FailingDecisionModel(failures: int.MaxValue);
+        await using var worker = await StartWorkerAsync(
+            topology, model, ("Consumer:MaxRetries", "2"), ("Consumer:RetryDelay", "00:00:00"));
+        var comment = CreateComment();
+
+        await PublishAsync(topology, MessageSerializer.Serialize(comment));
+
+        await AssertQueuesAsync(topology, input: 0, deadLetter: 1);
+        Assert.Equal(3, model.Calls);
+        Assert.Equal(0, await CountAnalysesAsync(comment.CommentId));
+
+        // The dead-lettered copy is the last retry, so it carries the retry count for inspection.
+        await using var connection = await rabbitMq.ConnectAsync();
+        await using var channel = await connection.CreateChannelAsync();
+        var deadLettered = await channel.BasicGetAsync(topology.DeadLetterQueue, autoAck: true);
+        Assert.NotNull(deadLettered);
+        Assert.Equal(2, CommentCreatedConsumer.GetRetryCount(deadLettered.BasicProperties));
+        Assert.Equal(comment.CommentId, MessageSerializer.Deserialize<CommentCreated>(deadLettered.Body.Span).CommentId);
+    }
+
+    [Fact]
+    public async Task RetryCopy_IsNotRoutedToQueuesNamedInTheCcHeader()
+    {
+        var topology = RabbitMqFixture.CreateTopologySettings();
+        var model = new FailingDecisionModel(failures: 1);
+        await using var worker = await StartWorkerAsync(topology, model, ("Consumer:RetryDelay", "00:00:00"));
+        var comment = CreateComment();
+
+        // A hostile producer names another queue in CC; the worker's retry must not deliver there.
+        await PublishAsync(topology, MessageSerializer.Serialize(comment), new Dictionary<string, object?>
+        {
+            ["CC"] = new List<object> { Encoding.UTF8.GetBytes(topology.DeadLetterQueue) },
+        });
 
         await WaitForAnalysisAsync(comment.CommentId);
         Assert.Equal(2, model.Calls);
@@ -269,7 +344,7 @@ public class CommentCreatedConsumerTests(PostgresFixture postgres, RabbitMqFixtu
         }
     }
 
-    private async Task PublishAsync(TopologySettings topology, byte[] body)
+    private async Task PublishAsync(TopologySettings topology, byte[] body, IDictionary<string, object?>? headers = null)
     {
         await using var connection = await rabbitMq.ConnectAsync();
         await using var channel = await connection.CreateChannelAsync(
@@ -278,7 +353,7 @@ public class CommentCreatedConsumerTests(PostgresFixture postgres, RabbitMqFixtu
             topology.Exchange,
             "comment.created",
             mandatory: true,
-            new BasicProperties { ContentType = "application/json", Persistent = true },
+            new BasicProperties { ContentType = "application/json", Persistent = true, Headers = headers },
             body);
     }
 
