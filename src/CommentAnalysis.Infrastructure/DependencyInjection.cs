@@ -3,7 +3,7 @@ using CommentAnalysis.Core.Decisions;
 using CommentAnalysis.Core.Models;
 using CommentAnalysis.Infrastructure.Messaging;
 using CommentAnalysis.Infrastructure.Models;
-using CommentAnalysis.Infrastructure.Models.Llm;
+using CommentAnalysis.Infrastructure.Models.SystemOne;
 using CommentAnalysis.Infrastructure.Options;
 using CommentAnalysis.Infrastructure.Persistence;
 using Microsoft.Extensions.Configuration;
@@ -38,8 +38,13 @@ public static partial class DependencyInjection
 
         services.TryAddSingleton(TimeProvider.System);
         services.AddSingleton(sp => new DecisionPolicy(sp.GetRequiredService<IOptions<DecisionPolicyOptions>>().Value));
-        services.AddHttpClient(LlmDecisionModel.HttpClientName, (serviceProvider, client) =>
-                client.Timeout = serviceProvider.GetRequiredService<IOptions<ModelOptions>>().Value.Llm.Timeout)
+        services.AddHttpClient(SystemOneDecisionModel.HttpClientName, (serviceProvider, client) =>
+            {
+                client.Timeout = serviceProvider.GetRequiredService<IOptions<ModelOptions>>().Value.SystemOne.Timeout;
+
+                // The answers take about 2 KB; a misbehaving server must not fill the worker's memory.
+                client.MaxResponseContentBufferSize = 1024 * 1024;
+            })
             // A redirect would silently turn the POST into a GET to another location.
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
         services.AddSingleton(CreateDecisionModel);
@@ -120,10 +125,10 @@ public static partial class DependencyInjection
 
                 return new StaticDecisionModel(options.Static);
 
-            case ModelProvider.Llm:
-                return new LlmDecisionModel(
+            case ModelProvider.SystemOne:
+                return new SystemOneDecisionModel(
                     serviceProvider.GetRequiredService<IHttpClientFactory>(),
-                    options.Llm,
+                    options.SystemOne,
                     serviceProvider.GetRequiredService<TimeProvider>());
 
             default:

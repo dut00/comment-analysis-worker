@@ -205,6 +205,7 @@ Questions sent in one request (`state` = the comment as a plain string; question
   - `POST /v1/systemone`: every answer carries its `type`. `choice` → `choice`, `probabilities` per option, `confidence` = the chosen option's probability (not the normalized (p − 1/n)/(1 − 1/n) of the README example). `score` → `score` (expected level, fractional), `legend` `{"0":…}`, `probabilities` keyed `"0"`…`"3"`, `confidence` = the most likely level's probability. `noul` → `noul`, `probabilities` `{"true","false"}`, `confidence`. `usage` adds `questions`, `branches`, `latency_ms`, `longest_prompt_tokens`; the request's `model` field is ignored.
   - Invalid requests → **422** `{"error":"…"}` (fewer than 2 options, unknown type, no questions, malformed JSON), answered in milliseconds; GET → 405; unknown paths → 404.
   - Latency: 76–90 s for the four questions (about 20 s per question; ~600–700 input tokens). `Model:SystemOne:Timeout` must be several minutes, and `Host:ShutdownTimeout` (20 s) will cancel an evaluation in flight at shutdown – the message is then redelivered, which is correct but wastes the work.
+  - A 10 220-character comment (the current `Consumer:MaxContentLength` is 10 000) got no answer within 20 minutes, while the server kept answering `/health` and `/v1/models` at once. Long comments are therefore the main risk: with a 5-minute timeout such a comment takes its counted retries (the probe still lists the model) and ends in the DLQ, but occupies the server for 4 × 5 minutes on the way. S4 must lower `MaxContentLength` to what the server answers in time. Worse, if the server keeps computing a request after the client gave up (to be checked in S3), the abandoned work delays the comments behind it: a normal comment can then time out too while the model is listed, and be dead-lettered after its retries (S2 review).
   - Answers: an insult with an ad link and a phone number → reject 0.99, toxicity 1.79/3, spam 0.94, personal data 0.95. A polite disagreement → approve 0.96, toxicity 0.74/3 (0.25 – close to the 0.35 limit), spam 0.09, personal data 0.03.
 
 **S1. Signals and review reasons in the domain** `[x]`
@@ -213,12 +214,17 @@ Questions sent in one request (`state` = the comment as a plain string; question
 - `CommentAnalyzed` is unchanged (open point: whether it should carry the review reasons).
 - After the S1 review: the migration fills `review_reasons = {LowConfidence}` for existing ManualReview rows (the only way to manual review before S1), and a check constraint `ck_comment_analyses_review_reasons` enforces "reasons if and only if ManualReview" (verified on the compose database in a rolled-back transaction). `ReviewReason` names are stored, so the members must not be renamed. The new limits are listed in `appsettings.json`.
 
-**S2. `SystemOneDecisionModel`** `[ ]`
-- Replaces `LlmDecisionModel` (`Model:Provider=SystemOne`, options `BaseUrl`, `ApiKey`, `Model`, `Version`, `Timeout`). Builds the four questions, validates every answer (missing answer, unknown choice, probabilities outside [0, 1] or not summing to 1, choice not the argmax, score outside [0, 3], noul outside [0, 1] → `SystemOneResponseException`, counted retries then the DLQ), and maps them to `ModelPrediction` + `ModerationSignals`. A different response `model` → `ModelUnavailableException`.
-- Keeps F2's outage handling: a 422 is the comment's (or a configuration) failure; 3xx/401/403/404/408/429/5xx and timeouts are confirmed by the probe (`GET models` lists the model). Readiness also uses the probe.
+**S2. `SystemOneDecisionModel`** `[x]`
+- Replaces `LlmDecisionModel` (`Model:Provider=SystemOne`, options `Model:SystemOne`: `BaseUrl`, `ApiKey`, `Model`, `Version`, `Timeout` – default 5 min, at most 10). The questions are constants in `SystemOneQuestions`; the version hashes the framing (`plain-state-v1`, the comment as the plain `state` string) and the serialized questions.
+- Validation (`SystemOneResponseException`, counted retries then the DLQ): a missing answer, an answer `type` other than the one asked (the type itself is optional), a verdict choice other than `approve`/`reject`, verdict probabilities that are missing, have other keys, are outside [0, 1], do not sum to 1 ± 0.001 or do not make the choice the most likely option, a toxicity `score` outside [0, 3], and a `noul` outside [0, 1]. The score's level probabilities are not checked: only the expected score is used.
+- Unavailable model (as in F2): an unreachable server, a response without `model` or with another `model` (e.g. LM Studio's 200 "Unexpected endpoint" on the same port), and timeouts or 3xx/401/403/404/408/429/5xx (including 501) that the probe confirms. The probe (`GET models`, also readiness) accepts the Basal list (`models[].name`) and llama.cpp's (`data[].id` with `"decisions"` in `architecture.output_modalities`), so an OpenAI-style list such as LM Studio's does not count. 4xx such as 400/422 are failures of the comment.
+- Live check through the class against the Basal server: readiness Healthy, version `basal-2.0-mini@2.0+cef8109c93be`; a polite comment → Approve 0.857 (toxicity 0.19, spam 0.06, personal data 0.04), an injection attempt with an insult → Reject 0.983 (toxicity 0.81, spam 0.93). Each took about 122 s instead of 76–90 s, possibly because the server was still busy with the abandoned long request (see S0).
+- After the S2 review: the request also names the `model` (ignored by the Basal server, needed by servers with several models), and a response is limited to 1 MB. Not verified yet: whether TypeSafe's cloud has a model list in one of the accepted shapes (phase G).
+- Development settings and compose switched to `SystemOne` in this step (the `Llm` provider no longer exists, and the tests load the Development settings); `CLAUDE.md` updated.
 
-**S3. Wire it into the host** `[ ]`
-- Development settings and compose (`host.docker.internal:1234`), docs and CLAUDE.md, manual end-to-end check.
+**S3. End-to-end in compose** `[ ]`
+- The compose worker against the model server on the host (`host.docker.internal:1234` – the server must listen beyond localhost), the remaining docs (Verification, Open points), and a manual end-to-end check.
+- Check whether the server stops working on a request when the client disconnects; if not, lower `Consumer:MaxContentLength` before S4 (see S0).
 
 **S4. Polish quality check** `[ ]` (replaces F3)
 - Labelled sample in `tests/data/` (criticism, swearing, threats, spam, personal data, injection, long comments), an opt-in report (accuracy, decisions, review reasons, latency), and the long-comment behaviour. **Decision point for the user:** question texts, thresholds and limits.
@@ -273,8 +279,8 @@ Deferred: the default model is the LLM (phase F). Kept for a non-generative alte
 
 ---
 
-## Verification (end-to-end, after F2)
-1. LM Studio: load `basal-2.0-mini`, start the server on port 1234 with "Serve on Local Network".
+## Verification (end-to-end, after S3)
+1. Start the `/v1/systemone` server with `basal-2.0-mini` on port 1234, listening beyond localhost (the container reaches it through `host.docker.internal`).
 2. `docker compose up --build`
 3. RabbitMQ UI at http://localhost:15672: publish a `CommentCreated` JSON message to the `comments` exchange with routing key `comment.created`.
 4. `SELECT * FROM comment_analyses;` shows the decision, confidence and model_version.

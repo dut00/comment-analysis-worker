@@ -2,7 +2,7 @@ using System.Net;
 using CommentAnalysis.Core.Analysis;
 using CommentAnalysis.Core.Decisions;
 using CommentAnalysis.Core.Models;
-using CommentAnalysis.Infrastructure.Models.Llm;
+using CommentAnalysis.Infrastructure.Models.SystemOne;
 using CommentAnalysis.IntegrationTests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -39,31 +39,31 @@ public class WorkerHostTests
     }
 
     [Fact]
-    public async Task DecisionModel_IsTheLlm_WhenConfigured()
+    public async Task DecisionModel_IsSystemOne_WhenConfigured()
     {
         await using var factory = new WorkerFactory(
-            ("Model:Provider", "Llm"),
-            ("Model:Llm:BaseUrl", "http://localhost:1234/v1/"),
-            ("Model:Llm:Model", "basal-2.0-mini"),
-            ("Model:Llm:Version", "2.0"));
+            ("Model:Provider", "SystemOne"),
+            ("Model:SystemOne:BaseUrl", "http://localhost:1234/v1/"),
+            ("Model:SystemOne:Model", "basal-2.0-mini"),
+            ("Model:SystemOne:Version", "2.0"));
 
         var model = factory.Services.GetRequiredService<IDecisionModel>();
 
-        Assert.IsType<LlmDecisionModel>(model);
+        Assert.IsType<SystemOneDecisionModel>(model);
         Assert.StartsWith("basal-2.0-mini@2.0+", model.Info.Version, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task Startup_Fails_WhenLlmIsNotConfigured()
+    public async Task Startup_Fails_WhenSystemOneIsNotConfigured()
     {
-        // Production: only the shipped appsettings.json applies, which has no LLM settings.
-        await using var factory = new WorkerFactory(("Model:Provider", "Llm")) { Environment = "Production" };
+        // Production: only the shipped appsettings.json applies, which has no model settings.
+        await using var factory = new WorkerFactory(("Model:Provider", "SystemOne")) { Environment = "Production" };
 
         var exception = Assert.Throws<OptionsValidationException>(() => factory.CreateClient());
 
-        Assert.Contains("Model:Llm:BaseUrl", exception.Message, StringComparison.Ordinal);
-        Assert.Contains("Model:Llm:Model is required", exception.Message, StringComparison.Ordinal);
-        Assert.Contains("Model:Llm:Version is required", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("Model:SystemOne:BaseUrl", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("Model:SystemOne:Model is required", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("Model:SystemOne:Version is required", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]

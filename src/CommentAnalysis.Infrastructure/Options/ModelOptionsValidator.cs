@@ -1,6 +1,6 @@
 using CommentAnalysis.Core.Models;
 using CommentAnalysis.Infrastructure.Models;
-using CommentAnalysis.Infrastructure.Models.Llm;
+using CommentAnalysis.Infrastructure.Models.SystemOne;
 using Microsoft.Extensions.Options;
 
 namespace CommentAnalysis.Infrastructure.Options;
@@ -39,8 +39,8 @@ internal sealed class ModelOptionsValidator : IValidateOptions<ModelOptions>
 
                 break;
 
-            case ModelProvider.Llm:
-                ValidateLlm(options.Llm, errors);
+            case ModelProvider.SystemOne:
+                ValidateSystemOne(options.SystemOne, errors);
                 break;
         }
 
@@ -51,9 +51,9 @@ internal sealed class ModelOptionsValidator : IValidateOptions<ModelOptions>
     private static bool IsLocal(Uri url) =>
         url.IsLoopback || string.Equals(url.Host, "host.docker.internal", StringComparison.OrdinalIgnoreCase);
 
-    private static void ValidateLlm(LlmModelOptions options, List<string> errors)
+    private static void ValidateSystemOne(SystemOneModelOptions options, List<string> errors)
     {
-        const string section = $"{ModelOptions.SectionName}:{nameof(ModelOptions.Llm)}";
+        const string section = $"{ModelOptions.SectionName}:{nameof(ModelOptions.SystemOne)}";
 
         if (options.BaseUrl is not { IsAbsoluteUri: true } baseUrl || (baseUrl.Scheme != Uri.UriSchemeHttp && baseUrl.Scheme != Uri.UriSchemeHttps))
         {
@@ -80,19 +80,9 @@ internal sealed class ModelOptionsValidator : IValidateOptions<ModelOptions>
             errors.Add($"{section}:Model and Version together must be at most {ModelInfo.MaxLength - 14} characters.");
         }
 
-        if (string.IsNullOrWhiteSpace(options.Instructions))
-        {
-            errors.Add($"{section}:Instructions are required.");
-        }
-
         if (options.Timeout <= TimeSpan.Zero || options.Timeout > TimeSpan.FromMinutes(10))
         {
             errors.Add($"{section}:Timeout must be within (0, 10 min], but was {options.Timeout}.");
-        }
-
-        if (options.MaxTokens is < 16 or > 4096)
-        {
-            errors.Add($"{section}:MaxTokens must be within [16, 4096], but was {options.MaxTokens}.");
         }
     }
 }

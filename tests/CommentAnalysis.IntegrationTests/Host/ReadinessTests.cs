@@ -35,17 +35,17 @@ public class ReadinessTests(PostgresFixture postgres, RabbitMqFixture rabbitMq)
     }
 
     [Fact]
-    public async Task Ready_ReturnsServiceUnavailable_WhenTheLlmIsUnreachable_WhileLiveStaysOk()
+    public async Task Ready_ReturnsServiceUnavailable_WhenTheModelServerIsUnreachable_WhileLiveStaysOk()
     {
         await using var factory = new WorkerFactory(
         [
             ("Database:ConnectionString", postgres.ConnectionString),
             .. rabbitMq.WorkerSettings(RabbitMqFixture.CreateTopologySettings()),
-            ("Model:Provider", "Llm"),
+            ("Model:Provider", "SystemOne"),
             // Closed port.
-            ("Model:Llm:BaseUrl", "http://127.0.0.1:1/v1/"),
-            ("Model:Llm:Model", "basal-2.0-mini"),
-            ("Model:Llm:Version", "2.0"),
+            ("Model:SystemOne:BaseUrl", "http://127.0.0.1:1/v1/"),
+            ("Model:SystemOne:Model", "basal-2.0-mini"),
+            ("Model:SystemOne:Version", "2.0"),
         ]);
         using var client = factory.CreateClient();
         await WaitForTopologyAsync(factory);
