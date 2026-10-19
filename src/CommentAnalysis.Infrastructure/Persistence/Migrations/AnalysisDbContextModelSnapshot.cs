@@ -37,7 +37,7 @@ namespace CommentAnalysis.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("comment_id");
 
-                    b.Property<double>("Confidence")
+                    b.Property<double?>("Confidence")
                         .HasColumnType("double precision")
                         .HasColumnName("confidence");
 
@@ -52,7 +52,6 @@ namespace CommentAnalysis.Infrastructure.Persistence.Migrations
                         .HasColumnName("duration_ms");
 
                     b.Property<string>("Label")
-                        .IsRequired()
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)")
                         .HasColumnName("label");
@@ -107,6 +106,8 @@ namespace CommentAnalysis.Infrastructure.Persistence.Migrations
                     b.ToTable("comment_analyses", null, t =>
                         {
                             t.HasCheckConstraint("ck_comment_analyses_confidence_range", "confidence >= 0 AND confidence <= 1");
+
+                            t.HasCheckConstraint("ck_comment_analyses_label_confidence", "(label IS NULL) = (confidence IS NULL)");
 
                             t.HasCheckConstraint("ck_comment_analyses_personal_data_probability_range", "personal_data_probability >= 0 AND personal_data_probability <= 1");
 

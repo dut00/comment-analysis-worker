@@ -64,6 +64,9 @@ internal sealed class CommentAnalysisEntityConfiguration : IEntityTypeConfigurat
             table.HasCheckConstraint("ck_comment_analyses_confidence_range", "confidence >= 0 AND confidence <= 1");
             table.HasCheckConstraint("ck_comment_analyses_toxicity_range", "toxicity >= 0 AND toxicity <= 1");
 
+            // A comment the model did not evaluate has neither a label nor a confidence.
+            table.HasCheckConstraint("ck_comment_analyses_label_confidence", "(label IS NULL) = (confidence IS NULL)");
+
             // Every manual review has a reason, and no other decision has one.
             table.HasCheckConstraint(
                 "ck_comment_analyses_review_reasons",

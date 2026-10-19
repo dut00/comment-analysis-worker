@@ -383,19 +383,12 @@ internal sealed partial class CommentCreatedConsumer(
 
         using var scope = CommentScope(logger, comment.CommentId);
 
-        if (comment.Content.Length > _maxContentLength)
-        {
-            LogContentTooLong(logger, comment.Content.Length, _maxContentLength);
-            await DeadLetterAsync(channel, delivery).ConfigureAwait(false);
-            return;
-        }
-
         ProcessingResult result;
         try
         {
             await using var services = scopeFactory.CreateAsyncScope();
             var processor = services.ServiceProvider.GetRequiredService<CommentProcessor>();
-            result = await processor.ProcessAsync(comment, cancellationToken).ConfigureAwait(false);
+            result = await processor.ProcessAsync(comment, _maxContentLength, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -415,9 +408,9 @@ internal sealed partial class CommentCreatedConsumer(
             return;
         }
 
-        if (result.Analysis is not null)
+        if (result.Analysis is { Prediction: not null })
         {
-            // The model answered (a duplicate is skipped without asking it).
+            // The model answered (a duplicate or a comment too long is stored without asking it).
             Interlocked.Exchange(ref _modelUnavailableDelayTicks, InitialRetryDelay.Ticks);
         }
 
@@ -425,7 +418,12 @@ internal sealed partial class CommentCreatedConsumer(
         await SettleAsync(() => channel.BasicAckAsync(delivery.DeliveryTag, multiple: false, CancellationToken.None))
             .ConfigureAwait(false);
 
-        if (result.Analysis is { } analysis)
+        if (result.Analysis is { Prediction: null })
+        {
+            // Not evaluated: the processor stored a manual review instead of occupying the model for too long.
+            LogContentTooLong(logger, comment.Content.Length, _maxContentLength);
+        }
+        else if (result.Analysis is { } analysis)
         {
             LogAnalyzed(logger, analysis.Decision, analysis.Confidence, analysis.Model.Version, analysis.Duration.TotalMilliseconds);
         }
@@ -624,7 +622,7 @@ internal sealed partial class CommentCreatedConsumer(
     private static partial void LogConsuming(ILogger logger, string queue, int concurrency, int prefetch);
 
     [LoggerMessage(EventId = 301, Level = LogLevel.Information, Message = "Comment analyzed: {Decision} with confidence {Confidence} by {ModelVersion} in {DurationMs} ms")]
-    private static partial void LogAnalyzed(ILogger logger, Core.Decisions.Decision decision, double confidence, string modelVersion, double durationMs);
+    private static partial void LogAnalyzed(ILogger logger, Core.Decisions.Decision decision, double? confidence, string modelVersion, double durationMs);
 
     [LoggerMessage(EventId = 302, Level = LogLevel.Information, Message = "Comment already analyzed by {ModelVersion}; acknowledged without reprocessing")]
     private static partial void LogAlreadyAnalyzed(ILogger logger, string modelVersion);
@@ -671,7 +669,7 @@ internal sealed partial class CommentCreatedConsumer(
     [LoggerMessage(EventId = 314, Level = LogLevel.Error, Message = "Rejected message {MessageId} (delivery {DeliveryTag}) to the dead-letter queue: body of {Length} bytes exceeds the limit of {Limit}")]
     private static partial void LogMessageTooLarge(ILogger logger, string? messageId, ulong deliveryTag, int length, int limit);
 
-    [LoggerMessage(EventId = 315, Level = LogLevel.Error, Message = "Rejected the comment to the dead-letter queue: content of {Length} characters exceeds the limit of {Limit}")]
+    [LoggerMessage(EventId = 315, Level = LogLevel.Warning, Message = "Sent the comment to manual review without evaluating it: content of {Length} characters exceeds the limit of {Limit}")]
     private static partial void LogContentTooLong(ILogger logger, int length, int limit);
 
     [LoggerMessage(EventId = 313, Level = LogLevel.Warning, Message = "Closing the consumer channel failed")]

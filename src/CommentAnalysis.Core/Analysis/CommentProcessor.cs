@@ -9,9 +9,15 @@ namespace CommentAnalysis.Core.Analysis;
 /// </summary>
 public sealed class CommentProcessor(CommentAnalyzer analyzer, IAnalysisStore store)
 {
-    public async Task<ProcessingResult> ProcessAsync(CommentCreated comment, CancellationToken cancellationToken)
+    /// <param name="comment">The comment to process.</param>
+    /// <param name="maxContentLength">
+    /// Longer comments are not sent to the model but to manual review (<see cref="Decisions.ReviewReason.TooLong"/>).
+    /// </param>
+    /// <param name="cancellationToken">Cancels the processing.</param>
+    public async Task<ProcessingResult> ProcessAsync(CommentCreated comment, int maxContentLength, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(comment);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxContentLength);
 
         var model = analyzer.Model;
         if (await store.ExistsAsync(comment.CommentId, model.Version, cancellationToken).ConfigureAwait(false))
@@ -19,7 +25,9 @@ public sealed class CommentProcessor(CommentAnalyzer analyzer, IAnalysisStore st
             return ProcessingResult.AlreadyAnalyzed(model);
         }
 
-        var analysis = await analyzer.AnalyzeAsync(comment.Content, cancellationToken).ConfigureAwait(false);
+        var analysis = comment.Content.Length > maxContentLength
+            ? analyzer.SkipTooLong()
+            : await analyzer.AnalyzeAsync(comment.Content, cancellationToken).ConfigureAwait(false);
         var outcome = await store.SaveAsync(comment.CommentId, comment.PostId, analysis, cancellationToken)
             .ConfigureAwait(false);
 

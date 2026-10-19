@@ -17,4 +17,10 @@ public enum ReviewReason
 
     /// <summary>The comment likelier reveals personal data than <see cref="DecisionPolicyOptions.MaxPersonalDataForApprove"/>.</summary>
     PersonalData,
+
+    /// <summary>
+    /// The comment is longer than the model can evaluate in time (<c>Consumer:MaxContentLength</c>), so it was not
+    /// evaluated at all.
+    /// </summary>
+    TooLong,
 }

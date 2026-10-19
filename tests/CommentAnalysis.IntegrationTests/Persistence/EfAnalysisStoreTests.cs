@@ -72,6 +72,35 @@ public class EfAnalysisStoreTests(PostgresFixture postgres)
         Assert.Equal(0.95, row.PersonalDataProbability);
     }
 
+    [Fact]
+    public async Task SaveAsync_PersistsACommentTheModelDidNotEvaluate()
+    {
+        var commentId = Guid.NewGuid();
+        var result = CreateResult(Model) with
+        {
+            Decision = Decision.ManualReview,
+            ReviewReasons = [ReviewReason.TooLong],
+            Prediction = null,
+            Duration = TimeSpan.Zero,
+        };
+
+        await using (var context = postgres.CreateContext())
+        {
+            await new EfAnalysisStore(context).SaveAsync(commentId, Guid.NewGuid(), result, CancellationToken.None);
+        }
+
+        await using var verifyContext = postgres.CreateContext();
+        var row = await verifyContext.CommentAnalyses.SingleAsync(a => a.CommentId == commentId);
+
+        Assert.Equal(["TooLong"], row.ReviewReasons);
+        Assert.Null(row.Label);
+        Assert.Null(row.Confidence);
+        Assert.Empty(row.Probabilities);
+        Assert.Null(row.Toxicity);
+        var message = Assert.Single(await GetOutboxMessagesAsync(commentId));
+        Assert.Null(MessageSerializer.Deserialize<CommentAnalyzed>(Encoding.UTF8.GetBytes(message.Payload)).Confidence);
+    }
+
     [Theory]
     [InlineData(Decision.ManualReview, false)]
     [InlineData(Decision.Reject, true)]

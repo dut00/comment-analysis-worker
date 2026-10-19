@@ -83,19 +83,25 @@ public class CommentCreatedConsumerTests(PostgresFixture postgres, RabbitMqFixtu
     }
 
     [Fact]
-    public async Task TooLongContent_IsDeadLettered_WithoutReachingTheModel()
+    public async Task TooLongContent_GoesToManualReview_WithoutReachingTheModel()
     {
         var topology = RabbitMqFixture.CreateTopologySettings();
-        await using var worker = await StartWorkerAsync(topology, ("Consumer:MaxContentLength", "10"));
+        var model = new FailingDecisionModel(failures: 0);
+        await using var worker = await StartWorkerAsync(topology, model, ("Consumer:MaxContentLength", "10"));
         var tooLong = CreateComment() with { Content = "eleven char" };
         var comment = CreateComment() with { Content = "ten chars!" };
 
         await PublishAsync(topology, MessageSerializer.Serialize(tooLong));
         await PublishAsync(topology, MessageSerializer.Serialize(comment));
 
+        var review = await WaitForAnalysisAsync(tooLong.CommentId);
         await WaitForAnalysisAsync(comment.CommentId);
-        await AssertQueuesAsync(topology, input: 0, deadLetter: 1);
-        Assert.Equal(0, await CountAnalysesAsync(tooLong.CommentId));
+        await AssertQueuesAsync(topology, input: 0, deadLetter: 0);
+        Assert.Equal(Decision.ManualReview, review.Decision);
+        Assert.Equal(["TooLong"], review.ReviewReasons);
+        Assert.Null(review.Label);
+        Assert.Null(review.Confidence);
+        Assert.Equal(1, model.Calls);
     }
 
     [Fact]
@@ -143,7 +149,7 @@ public class CommentCreatedConsumerTests(PostgresFixture postgres, RabbitMqFixtu
     {
         var topology = RabbitMqFixture.CreateTopologySettings();
         var model = new BlockingDecisionModel();
-        var worker = await StartWorkerAsync(topology, model, ("Consumer:Concurrency", "2"), ("Host:ShutdownTimeout", "00:00:20"));
+        var worker = await StartWorkerAsync(topology, model, ("Consumer:Concurrency", "2"), ("Consumer:Prefetch", "2"), ("Host:ShutdownTimeout", "00:00:20"));
         var first = CreateComment();
         var second = CreateComment();
 

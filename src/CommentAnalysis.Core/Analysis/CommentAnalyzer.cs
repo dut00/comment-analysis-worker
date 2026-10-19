@@ -25,6 +25,18 @@ public sealed class CommentAnalyzer
 
     public ModelInfo Model => _model.Info;
 
+    /// <summary>
+    /// Sends a comment too long for the model to manual review without evaluating it: a person decides, instead of the
+    /// comment being dropped or occupying the model for longer than it can answer.
+    /// </summary>
+    public AnalysisResult SkipTooLong() => new(
+        Decision.ManualReview,
+        [ReviewReason.TooLong],
+        null,
+        _model.Info,
+        _timeProvider.GetUtcNow(),
+        TimeSpan.Zero);
+
     public async Task<AnalysisResult> AnalyzeAsync(string content, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(content);

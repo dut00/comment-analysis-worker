@@ -20,10 +20,11 @@ public sealed class CommentAnalysisEntity
 
     public Decision Decision { get; set; }
 
-    public ContentLabel Label { get; set; }
+    /// <summary>Null when the model did not evaluate the comment (<see cref="ReviewReason.TooLong"/>).</summary>
+    public ContentLabel? Label { get; set; }
 
-    /// <summary>The model's confidence in <see cref="Label"/> – the persisted score.</summary>
-    public double Confidence { get; set; }
+    /// <summary>The model's confidence in <see cref="Label"/> – the persisted score. Null like <see cref="Label"/>.</summary>
+    public double? Confidence { get; set; }
 
     /// <summary>Model-specific raw probabilities, stored as jsonb for diagnostics.</summary>
     public Dictionary<string, double> Probabilities { get; set; } = [];
@@ -58,13 +59,13 @@ public sealed class CommentAnalysisEntity
             CommentId = commentId,
             PostId = postId,
             Decision = result.Decision,
-            Label = result.Prediction.Label,
+            Label = result.Prediction?.Label,
             Confidence = result.Confidence,
-            Probabilities = new Dictionary<string, double>(result.Prediction.Probabilities),
+            Probabilities = result.Prediction is null ? [] : new Dictionary<string, double>(result.Prediction.Probabilities),
             ReviewReasons = [.. result.ReviewReasons.Select(reason => reason.ToString())],
-            Toxicity = result.Prediction.Signals?.Toxicity,
-            SpamProbability = result.Prediction.Signals?.Spam,
-            PersonalDataProbability = result.Prediction.Signals?.PersonalData,
+            Toxicity = result.Prediction?.Signals?.Toxicity,
+            SpamProbability = result.Prediction?.Signals?.Spam,
+            PersonalDataProbability = result.Prediction?.Signals?.PersonalData,
             ModelName = result.Model.Name,
             ModelVersion = result.Model.Version,
             AnalyzedAt = result.AnalyzedAt,
