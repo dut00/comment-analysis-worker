@@ -21,7 +21,7 @@ RUN dotnet publish src/CommentAnalysis.Worker/CommentAnalysis.Worker.csproj \
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 
-ENV ASPNETCORE_HTTP_PORTS=8080 \
+ENV ASPNETCORE_HTTP_PORTS=7461 \
     DOTNET_ENVIRONMENT=Production \
     ASPNETCORE_ENVIRONMENT=Production
 
@@ -29,7 +29,7 @@ COPY --from=build /app/publish .
 
 # Non-root user provided by the official .NET images.
 USER $APP_UID
-EXPOSE 8080
+EXPOSE 7461
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
     CMD ["dotnet", "CommentAnalysis.Worker.dll", "healthcheck"]

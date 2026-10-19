@@ -26,8 +26,8 @@ dotnet test --filter "FullyQualifiedName=Namespace.Class.Method"         # one t
 dotnet format --verify-no-changes              # check style against .editorconfig
 dotnet tool restore                            # once: installs dotnet-ef from dotnet-tools.json
 dotnet ef migrations add <Name> --project src/CommentAnalysis.Infrastructure --startup-project src/CommentAnalysis.Infrastructure --output-dir Persistence/Migrations
-dotnet run --project src/CommentAnalysis.Worker  # local run on http://localhost:5080 (8080 is taken on the dev machine; containers use 8080). Needs Postgres (localhost:5433) and RabbitMQ (localhost:5672) from compose
-docker compose up --build -d                   # run in containers (worker http://localhost:5080, RabbitMQ UI http://localhost:15672 guest/guest, Postgres localhost:5433)
+dotnet run --project src/CommentAnalysis.Worker  # local run on http://localhost:7461 (same port as in the container; deliberately not 8080/5000). Needs Postgres (localhost:5433) and RabbitMQ (localhost:5672) from compose
+docker compose up --build -d                   # run in containers (worker http://localhost:7461, RabbitMQ UI http://localhost:15672 guest/guest, Postgres localhost:5433)
 docker compose down -v                         # reset local data; needed after changing RabbitMQ queue arguments (PRECONDITION_FAILED)
 ```
 

@@ -46,8 +46,8 @@ services:
       Database__MigrateOnStartup: "true"
       RabbitMq__Uri: amqp://guest:guest@rabbitmq:5672/
     ports:
-      # Host port 5080: 8080 is often taken on developer machines.
-      - "127.0.0.1:5080:8080"
+      # Uncommon port on purpose: 8080, 5000 and similar are usually taken by the main applications.
+      - "127.0.0.1:7461:7461"
     depends_on:
       postgres:
         condition: service_healthy

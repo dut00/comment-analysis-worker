@@ -8,7 +8,7 @@ internal static class HealthCheckCommand
 {
     public const string Name = "healthcheck";
 
-    private const string DefaultPort = "8080";
+    private const string DefaultPort = "7461";
 
     public static bool IsRequested(string[] args) =>
         args.Length > 0 && string.Equals(args[0], Name, StringComparison.OrdinalIgnoreCase);

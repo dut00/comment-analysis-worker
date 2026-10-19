@@ -93,8 +93,8 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - Done when: `dotnet run` starts and `/health/live` returns 200.
 
 **B2. Container** `[x]`
-- Multi-stage `Dockerfile` (sdk:10.0 → aspnet:10.0, non-root user, port 8080) and a `docker-compose.yml` containing only the worker.
-- Runtime images have no curl/wget, so `HEALTHCHECK` runs `dotnet CommentAnalysis.Worker.dll healthcheck`, which probes `/health/live`. Compose maps host port 5080 → container 8080. Invalid configuration ends the container with a non-zero code (currently 139, from the unhandled startup exception) after the host logs "Hosting failed to start".
+- Multi-stage `Dockerfile` (sdk:10.0 → aspnet:10.0, non-root user, port 7461) and a `docker-compose.yml` containing only the worker.
+- Runtime images have no curl/wget, so `HEALTHCHECK` runs `dotnet CommentAnalysis.Worker.dll healthcheck`, which probes `/health/live`. The worker listens on 7461 in the container and locally (compose maps 7461 → 7461): ports like 8080 or 5000 are usually taken by the main applications. Invalid configuration ends the container with a non-zero code (currently 139, from the unhandled startup exception) after the host logs "Hosting failed to start".
 - Done when: `docker compose up --build` starts and the health check passes.
 
 ### Phase C – Persistence (PostgreSQL)
@@ -202,7 +202,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 3. RabbitMQ UI at http://localhost:15672: publish a `CommentCreated` JSON message to the `comments` exchange with routing key `comment.created`.
 4. `SELECT * FROM comment_analyses;` shows the decision, confidence and model_version.
 5. A queue bound to `comment.analyzed` receives the event.
-6. `curl http://localhost:8080/health/ready` returns Healthy. A malformed message lands in the DLQ.
+6. `curl http://localhost:7461/health/ready` returns Healthy. A malformed message lands in the DLQ.
 
 ## Open points
 - Quality of the ONNX model on Polish comments (F4).
