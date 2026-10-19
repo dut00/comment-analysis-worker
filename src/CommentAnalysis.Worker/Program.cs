@@ -2,6 +2,8 @@ using CommentAnalysis.Infrastructure;
 using CommentAnalysis.Infrastructure.Messaging;
 using CommentAnalysis.Infrastructure.Persistence;
 using CommentAnalysis.Worker;
+using CommentAnalysis.Worker.Consumers;
+using Microsoft.Extensions.Options;
 
 if (HealthCheckCommand.IsRequested(args))
 {
@@ -10,12 +12,27 @@ if (HealthCheckCommand.IsRequested(args))
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Graceful shutdown: in-flight messages get up to Host:ShutdownTimeout to finish. Keep it below the
+// orchestrator's grace period (compose stop_grace_period, k8s terminationGracePeriodSeconds).
+builder.Services.Configure<HostOptions>(builder.Configuration.GetSection("Host"));
+
 builder.Services.AddCommentAnalysis(builder.Configuration);
 builder.Services.AddCommentAnalysisPersistence(builder.Configuration);
 builder.Services.AddCommentAnalysisMessaging(builder.Configuration);
+
+builder.Services.AddOptions<ConsumerOptions>()
+    .Bind(builder.Configuration.GetSection(ConsumerOptions.SectionName))
+    .ValidateOnStart();
+builder.Services.AddSingleton<IValidateOptions<ConsumerOptions>, ConsumerOptionsValidator>();
+
+// Registered after persistence and messaging, so migrations run before consuming starts.
+builder.Services.AddSingleton<CommentCreatedConsumer>();
+builder.Services.AddHostedService(serviceProvider => serviceProvider.GetRequiredService<CommentCreatedConsumer>());
+
 builder.Services.AddHealthChecks()
     .AddDbContextCheck<AnalysisDbContext>("postgres", tags: [HealthCheckTags.Ready])
-    .AddCheck<RabbitMqHealthCheck>("rabbitmq", tags: [HealthCheckTags.Ready]);
+    .AddCheck<RabbitMqHealthCheck>("rabbitmq", tags: [HealthCheckTags.Ready])
+    .AddCheck<ConsumerHealthCheck>("consumer", tags: [HealthCheckTags.Ready]);
 
 var app = builder.Build();
 

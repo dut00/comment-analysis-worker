@@ -13,4 +13,8 @@
     <Content Update="appsettings.Development.json" CopyToPublishDirectory="Never" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="CommentAnalysis.IntegrationTests" />
+  </ItemGroup>
+
 </Project>
