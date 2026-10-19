@@ -31,7 +31,7 @@ docker compose up --build -d                   # run in containers (worker http:
 docker compose down -v                         # reset local data; needed after changing RabbitMQ queue arguments (PRECONDITION_FAILED)
 ```
 
-Integration tests (`tests/CommentAnalysis.IntegrationTests`) use Testcontainers (`PostgresFixture`, one container per collection), so Docker must be running. Tests isolate data by using fresh ids rather than cleaning tables. `WorkerFactory` hosts the worker in-process with settings that need no external services.
+Integration tests (`tests/CommentAnalysis.IntegrationTests`) use Testcontainers (`PostgresFixture`, one container per collection), so Docker must be running. Tests isolate data by using fresh ids rather than cleaning tables. `WorkerFactory` hosts the worker in-process with settings that need no external services; `ConfigureServices` swaps services (e.g. `BlockingDecisionModel` to hold a message in flight). Use `RabbitMqFixture.GetQueueCountsAsync` (rabbitmqctl) to assert unacked messages – a passive queue declaration only counts ready ones. Note: under WebApplicationFactory the host is stopped twice (factory and `RunAsync`), so hosted services must have idempotent `StopAsync`.
 
 ## Build conventions
 
