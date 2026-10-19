@@ -91,8 +91,9 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - Implemented as `AddCommentAnalysis(configuration)` in Infrastructure (`DependencyInjection.cs`). `Model:Provider` has no default, so a missing value fails at startup. Logs are JSON in production and single-line text in Development. Integration tests use `WebApplicationFactory<Program>`.
 - Done when: `dotnet run` starts and `/health/live` returns 200.
 
-**B2. Container**
+**B2. Container** `[x]`
 - Multi-stage `Dockerfile` (sdk:10.0 → aspnet:10.0, non-root user, port 8080) and a `docker-compose.yml` containing only the worker.
+- Runtime images have no curl/wget, so `HEALTHCHECK` runs `dotnet CommentAnalysis.Worker.dll healthcheck`, which probes `/health/live`. Compose maps host port 5080 → container 8080. Invalid configuration ends the container with a non-zero code (currently 139, from the unhandled startup exception) after the host logs "Hosting failed to start".
 - Done when: `docker compose up --build` starts and the health check passes.
 
 ### Phase C – Persistence (PostgreSQL)

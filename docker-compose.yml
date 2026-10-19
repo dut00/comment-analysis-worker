@@ -1,0 +1,14 @@
+name: comment-analysis
+
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: src/CommentAnalysis.Worker/Dockerfile
+    image: comment-analysis-worker:local
+    environment:
+      Model__Provider: Static
+    ports:
+      # Host port 5080: 8080 is often reserved on Windows (Hyper-V excluded port ranges).
+      - "5080:8080"
+    restart: unless-stopped

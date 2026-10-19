@@ -1,0 +1,16 @@
+**/bin/
+**/obj/
+**/.vs/
+**/.vscode/
+**/*.user
+**/launchSettings.json
+.git/
+.gitignore
+.gitattributes
+.dockerignore
+docker-compose*.yml
+docs/
+tests/
+models/
+README.md
+CLAUDE.md

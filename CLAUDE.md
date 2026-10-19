@@ -24,6 +24,7 @@ dotnet test --filter "FullyQualifiedName~DecisionPolicyTests"            # one c
 dotnet test --filter "FullyQualifiedName=Namespace.Class.Method"         # one test
 dotnet format --verify-no-changes              # check style against .editorconfig
 dotnet run --project src/CommentAnalysis.Worker  # local run on http://localhost:5080 (8080 is reserved on the dev machine; containers use 8080)
+docker compose up --build -d                   # run in containers (worker on http://localhost:5080)
 ```
 
 Integration tests (`tests/CommentAnalysis.IntegrationTests`) will use Testcontainers, so Docker must be running.
@@ -33,7 +34,7 @@ Integration tests (`tests/CommentAnalysis.IntegrationTests`) will use Testcontai
 - Shared settings live in `Directory.Build.props` (net10.0, nullable, implicit usings, `AnalysisLevel=latest-recommended`, code style enforced at build). Project files stay minimal and should not repeat these settings.
 - Central Package Management is on. Add a `<PackageVersion>` to `Directory.Packages.props`, and put only a `<PackageReference Include="..." />` with no version in the `.csproj`.
 - `tests/Directory.Build.props` imports the root props and adds the xUnit packages and `using Xunit` to every test project automatically.
-- Style rules from `.editorconfig`: file-scoped namespaces, braces required, private fields named `_camelCase`, `static readonly` fields named `PascalCase`, LF line endings. Underscores are allowed in test method names. Naming rules (IDE1006) are **not** caught by `dotnet build`, so run `dotnet format --verify-no-changes` before committing.
+- Style rules from `.editorconfig`: file-scoped namespaces, braces required, private fields named `_camelCase`, `const` and `static readonly` fields named `PascalCase`, LF line endings. Underscores are allowed in test method names. Naming rules (IDE1006) are **not** caught by `dotnet build`, so run `dotnet format --verify-no-changes` before committing.
 
 ## Architecture (target – see plan for current status)
 
