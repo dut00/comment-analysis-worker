@@ -1,5 +1,6 @@
 using CommentAnalysis.Infrastructure;
 using CommentAnalysis.Infrastructure.Messaging;
+using CommentAnalysis.Infrastructure.Models;
 using CommentAnalysis.Infrastructure.Persistence;
 using CommentAnalysis.Worker;
 using CommentAnalysis.Worker.Consumers;
@@ -39,7 +40,8 @@ builder.Services.AddHostedService<OutboxPublisher>();
 builder.Services.AddHealthChecks()
     .AddDbContextCheck<AnalysisDbContext>("postgres", tags: [HealthCheckTags.Ready])
     .AddCheck<RabbitMqHealthCheck>("rabbitmq", tags: [HealthCheckTags.Ready])
-    .AddCheck<ConsumerHealthCheck>("consumer", tags: [HealthCheckTags.Ready]);
+    .AddCheck<ConsumerHealthCheck>("consumer", tags: [HealthCheckTags.Ready])
+    .AddCheck<DecisionModelHealthCheck>("model", tags: [HealthCheckTags.Ready]);
 
 var app = builder.Build();
 
