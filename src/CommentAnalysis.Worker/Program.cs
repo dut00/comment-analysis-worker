@@ -1,4 +1,5 @@
 using CommentAnalysis.Infrastructure;
+using CommentAnalysis.Infrastructure.Messaging;
 using CommentAnalysis.Infrastructure.Persistence;
 using CommentAnalysis.Worker;
 
@@ -11,8 +12,10 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddCommentAnalysis(builder.Configuration);
 builder.Services.AddCommentAnalysisPersistence(builder.Configuration);
+builder.Services.AddCommentAnalysisMessaging(builder.Configuration);
 builder.Services.AddHealthChecks()
-    .AddDbContextCheck<AnalysisDbContext>("postgres", tags: [HealthCheckTags.Ready]);
+    .AddDbContextCheck<AnalysisDbContext>("postgres", tags: [HealthCheckTags.Ready])
+    .AddCheck<RabbitMqHealthCheck>("rabbitmq", tags: [HealthCheckTags.Ready]);
 
 var app = builder.Build();
 

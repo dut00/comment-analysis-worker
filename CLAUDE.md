@@ -25,8 +25,8 @@ dotnet test --filter "FullyQualifiedName=Namespace.Class.Method"         # one t
 dotnet format --verify-no-changes              # check style against .editorconfig
 dotnet tool restore                            # once: installs dotnet-ef from dotnet-tools.json
 dotnet ef migrations add <Name> --project src/CommentAnalysis.Infrastructure --startup-project src/CommentAnalysis.Infrastructure --output-dir Persistence/Migrations
-dotnet run --project src/CommentAnalysis.Worker  # local run on http://localhost:5080 (8080 is taken on the dev machine; containers use 8080). Needs Postgres from compose on localhost:5433
-docker compose up --build -d                   # run in containers (worker on http://localhost:5080)
+dotnet run --project src/CommentAnalysis.Worker  # local run on http://localhost:5080 (8080 is taken on the dev machine; containers use 8080). Needs Postgres (localhost:5433) and RabbitMQ (localhost:5672) from compose
+docker compose up --build -d                   # run in containers (worker http://localhost:5080, RabbitMQ UI http://localhost:15672 guest/guest, Postgres localhost:5433)
 ```
 
 Integration tests (`tests/CommentAnalysis.IntegrationTests`) use Testcontainers (`PostgresFixture`, one container per collection), so Docker must be running. Tests isolate data by using fresh ids rather than cleaning tables. `WorkerFactory` hosts the worker in-process with settings that need no external services.
@@ -51,4 +51,4 @@ Cross-cutting design points that span several files:
 - **Idempotency**: `comment_analyses` has `UNIQUE(comment_id, model_version)`. The consumer skips comments already analyzed by the current model version, and acks only after the DB commit.
 - **Transactional outbox**: the analysis row and the `CommentAnalyzed` outbox row are written in one transaction. `OutboxPublisher` publishes with publisher confirms and claims rows with `FOR UPDATE SKIP LOCKED`, so multiple replicas are safe.
 - **Failures**: malformed messages go straight to the DLQ. Transient errors are retried via an `x-retry-count` header up to `Consumer:MaxRetries`, then sent to the DLQ.
-- **RabbitMQ topology**: topic exchange `comments`. Input queue `comment-analysis.comment-created` (routing key `comment.created`) with a DLQ. Output routing key `comment.analyzed`.
+- **RabbitMQ topology**: topic exchange `comments` (shared with the comment service). Quorum input queue `comment-analysis.comment-created` (routing key `comment.created`) dead-letters to direct exchange `comment-analysis.dead-letter` → quorum DLQ `comment-analysis.comment-created.dlq`. Output routing key `comment.analyzed`. Declared idempotently in the background by `RabbitMqTopologyInitializer` (retries until RabbitMQ is up; readiness is unhealthy until then).

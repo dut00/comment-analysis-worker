@@ -5,7 +5,7 @@ namespace CommentAnalysis.IntegrationTests.Infrastructure;
 
 /// <summary>
 /// Hosts the worker in-process with settings that need no external services: a static model
-/// and a connection string to a closed port (migrations on startup are disabled).
+/// and PostgreSQL and RabbitMQ addresses on a closed port (migrations on startup are disabled).
 /// Individual settings can be overridden per test.
 /// </summary>
 internal sealed class WorkerFactory : WebApplicationFactory<Program>
@@ -16,6 +16,7 @@ internal sealed class WorkerFactory : WebApplicationFactory<Program>
         // Closed port: fails fast if anything tries to connect (e.g. the readiness check).
         ["Database:ConnectionString"] = "Host=127.0.0.1;Port=1;Database=unused;Username=unused;Password=unused;Timeout=2",
         ["Database:MigrateOnStartup"] = "false",
+        ["RabbitMq:Uri"] = "amqp://guest:guest@127.0.0.1:1/",
     };
 
     private readonly Dictionary<string, string?> _settings;

@@ -19,6 +19,21 @@ services:
       retries: 10
     restart: unless-stopped
 
+  rabbitmq:
+    image: rabbitmq:4-management
+    ports:
+      - "5672:5672"
+      # Management UI: http://localhost:15672 (guest / guest)
+      - "15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   worker:
     build:
       context: .
@@ -28,13 +43,17 @@ services:
       Model__Provider: Static
       Database__ConnectionString: Host=postgres;Port=5432;Database=comment_analysis;Username=postgres;Password=postgres
       Database__MigrateOnStartup: "true"
+      RabbitMq__Uri: amqp://guest:guest@rabbitmq:5672/
     ports:
       # Host port 5080: 8080 is often taken on developer machines.
       - "5080:8080"
     depends_on:
       postgres:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
   postgres-data:
+  rabbitmq-data:

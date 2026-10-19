@@ -116,8 +116,9 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ### Phase D – Messaging (RabbitMQ)
 
-**D1. Connection and topology**
+**D1. Connection and topology** `[x]`
 - `RabbitMqOptions`, a singleton connection provider (RabbitMQ.Client 7.x, async API), and a `TopologyInitializer` that declares the exchange, the queue, the DLX and the DLQ. RabbitMQ is added to compose, and readiness now also checks RabbitMQ.
+- `RabbitMqTopologyInitializer` is a `BackgroundService` that retries with exponential back-off (up to `RabbitMq:MaxReconnectDelay`), so the host starts even when RabbitMQ is down; consumers will await `WaitUntilReadyAsync`. After the first connection the client's automatic recovery reconnects. Both queues are quorum queues; the input queue dead-letters to `comment-analysis.dead-letter` (direct) → `comment-analysis.comment-created.dlq`. Queue arguments cannot change on an existing queue (PRECONDITION_FAILED), so later tuning goes through RabbitMQ policies. Integration tests isolate topology per test with unique exchange/queue names. Verified in compose: stopping RabbitMQ turns `/health/ready` to 503 and it recovers on its own after restart.
 - Done when: the queues are visible in the management UI after startup.
 
 **D2. Consumer – happy path**

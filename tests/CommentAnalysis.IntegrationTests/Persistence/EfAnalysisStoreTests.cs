@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace CommentAnalysis.IntegrationTests.Persistence;
 
-[Collection(PostgresTestGroup.Name)]
+[Collection(ContainersTestGroup.Name)]
 public class EfAnalysisStoreTests(PostgresFixture postgres)
 {
     private static readonly ModelInfo Model = new("toxicity", "toxicity@1.0.0+abcdef123456");
