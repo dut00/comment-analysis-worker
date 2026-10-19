@@ -40,6 +40,53 @@ public class EfAnalysisStoreTests(PostgresFixture postgres)
         Assert.Equal(Model.Version, row.ModelVersion);
         Assert.Equal(result.AnalyzedAt, row.AnalyzedAt);
         Assert.Equal(42, row.DurationMs);
+        Assert.Empty(row.ReviewReasons);
+        Assert.Null(row.Toxicity);
+        Assert.Null(row.SpamProbability);
+        Assert.Null(row.PersonalDataProbability);
+    }
+
+    [Fact]
+    public async Task SaveAsync_PersistsReviewReasonsAndSignals()
+    {
+        var commentId = Guid.NewGuid();
+        var result = CreateResult(Model) with
+        {
+            Decision = Decision.ManualReview,
+            ReviewReasons = [ReviewReason.Spam, ReviewReason.PersonalData],
+            Prediction = new ModelPrediction(ContentLabel.Acceptable, 0.96, signals: new ModerationSignals(0.25, 0.94, 0.95)),
+        };
+
+        await using (var context = postgres.CreateContext())
+        {
+            await new EfAnalysisStore(context).SaveAsync(commentId, Guid.NewGuid(), result, CancellationToken.None);
+        }
+
+        await using var verifyContext = postgres.CreateContext();
+        var row = await verifyContext.CommentAnalyses.SingleAsync(a => a.CommentId == commentId);
+
+        Assert.Equal(Decision.ManualReview, row.Decision);
+        Assert.Equal(["Spam", "PersonalData"], row.ReviewReasons);
+        Assert.Equal(0.25, row.Toxicity);
+        Assert.Equal(0.94, row.SpamProbability);
+        Assert.Equal(0.95, row.PersonalDataProbability);
+    }
+
+    [Theory]
+    [InlineData(Decision.ManualReview, false)]
+    [InlineData(Decision.Reject, true)]
+    public async Task SaveAsync_Fails_WhenTheReviewReasonsDoNotMatchTheDecision(Decision decision, bool withReason)
+    {
+        var result = CreateResult(Model) with
+        {
+            Decision = decision,
+            ReviewReasons = withReason ? [ReviewReason.LowConfidence] : [],
+        };
+
+        await using var context = postgres.CreateContext();
+
+        await Assert.ThrowsAsync<DbUpdateException>(
+            () => new EfAnalysisStore(context).SaveAsync(Guid.NewGuid(), Guid.NewGuid(), result, CancellationToken.None));
     }
 
     [Fact]
@@ -183,6 +230,7 @@ public class EfAnalysisStoreTests(PostgresFixture postgres)
 
     private static AnalysisResult CreateResult(ModelInfo model) => new(
         Decision.Reject,
+        [],
         new ModelPrediction(
             ContentLabel.Unacceptable,
             0.93,

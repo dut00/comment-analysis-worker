@@ -32,9 +32,11 @@ public sealed class CommentAnalyzer
         var startedAt = _timeProvider.GetTimestamp();
         var prediction = await _model.EvaluateAsync(content, cancellationToken).ConfigureAwait(false);
         var duration = _timeProvider.GetElapsedTime(startedAt);
+        var decision = _policy.Decide(prediction);
 
         return new AnalysisResult(
-            _policy.Decide(prediction),
+            decision.Decision,
+            decision.ReviewReasons,
             prediction,
             _model.Info,
             _timeProvider.GetUtcNow(),

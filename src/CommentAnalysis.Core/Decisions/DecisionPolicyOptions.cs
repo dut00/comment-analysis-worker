@@ -22,21 +22,36 @@ public sealed class DecisionPolicyOptions
     /// <summary>Minimum confidence to reject an <c>Unacceptable</c> prediction.</summary>
     public double RejectThreshold { get; set; } = 0.90;
 
+    /// <summary>
+    /// The highest <see cref="Models.ModerationSignals.Toxicity"/> that still allows an approval. The default lets
+    /// through what is at most around "mild" (rude or sarcastic) on a four-level scale (0, 1/3, 2/3, 1).
+    /// </summary>
+    public double MaxToxicityForApprove { get; set; } = 0.35;
+
+    /// <summary>The highest <see cref="Models.ModerationSignals.Spam"/> probability that still allows an approval.</summary>
+    public double MaxSpamForApprove { get; set; } = 0.5;
+
+    /// <summary>The highest <see cref="Models.ModerationSignals.PersonalData"/> probability that still allows an approval.</summary>
+    public double MaxPersonalDataForApprove { get; set; } = 0.5;
+
     public IReadOnlyList<string> GetValidationErrors()
     {
         var errors = new List<string>();
 
-        AddErrorIfOutOfRange(errors, nameof(ApproveThreshold), ApproveThreshold);
-        AddErrorIfOutOfRange(errors, nameof(RejectThreshold), RejectThreshold);
+        AddErrorIfOutOfRange(errors, nameof(ApproveThreshold), ApproveThreshold, MinThreshold);
+        AddErrorIfOutOfRange(errors, nameof(RejectThreshold), RejectThreshold, MinThreshold);
+        AddErrorIfOutOfRange(errors, nameof(MaxToxicityForApprove), MaxToxicityForApprove, 0);
+        AddErrorIfOutOfRange(errors, nameof(MaxSpamForApprove), MaxSpamForApprove, 0);
+        AddErrorIfOutOfRange(errors, nameof(MaxPersonalDataForApprove), MaxPersonalDataForApprove, 0);
 
         return errors;
     }
 
-    private static void AddErrorIfOutOfRange(List<string> errors, string name, double value)
+    private static void AddErrorIfOutOfRange(List<string> errors, string name, double value, double min)
     {
-        if (!double.IsFinite(value) || value is < MinThreshold or > MaxThreshold)
+        if (!double.IsFinite(value) || value < min || value > MaxThreshold)
         {
-            errors.Add($"{SectionName}:{name} must be within [{MinThreshold}, {MaxThreshold}], but was {value}.");
+            errors.Add($"{SectionName}:{name} must be within [{min}, {MaxThreshold}], but was {value}.");
         }
     }
 }

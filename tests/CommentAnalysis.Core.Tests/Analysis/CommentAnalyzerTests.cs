@@ -28,6 +28,18 @@ public class CommentAnalyzerTests
     }
 
     [Fact]
+    public async Task AnalyzeAsync_RecordsTheReviewReasons()
+    {
+        var prediction = new ModelPrediction(ContentLabel.Acceptable, 0.97, signals: new ModerationSignals(0.1, 0.9, 0.0));
+        var analyzer = CreateAnalyzer(new FakeDecisionModel(prediction));
+
+        var result = await analyzer.AnalyzeAsync("some comment", CancellationToken.None);
+
+        Assert.Equal(Decision.ManualReview, result.Decision);
+        Assert.Equal([ReviewReason.Spam], result.ReviewReasons);
+    }
+
+    [Fact]
     public async Task AnalyzeAsync_PassesContentToModel()
     {
         var model = new FakeDecisionModel(new ModelPrediction(ContentLabel.Acceptable, 0.9));

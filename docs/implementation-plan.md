@@ -4,8 +4,8 @@
 A .NET 10 worker that consumes newly created user comments from RabbitMQ, evaluates each one with a decision model, and decides **Approve**, **Reject** or **ManualReview**. For every comment it stores the decision, the model's **confidence** (score) and the **model version** in PostgreSQL. It then publishes a `CommentAnalyzed` event. The worker is stateless and runs in containers.
 
 The model is hidden behind `IDecisionModel`:
-- **Default:** a local LLM (Basal 2.0 mini) served by LM Studio through its OpenAI-compatible chat completions API, asked for a structured `{label, confidence}` answer. It needs no API key and the comments stay on the local machine.
-- **Alternative:** the Jev decision model by TypeSafe AI (`POST https://api.typesafe.ai/v1/systemone`), which can be switched on in configuration once an API key is available.
+- **Default (phase S, in progress):** a decision model (Basal 2.0 mini) queried through the TypeSafe-compatible `POST /v1/systemone` API, as implemented by llama.cpp's server and by a local Basal server. One request asks four typed questions (`choice`, `score`, `noul`); the answers come from the model's output distribution, not from generated text. The same client can point at TypeSafe's cloud Jev (`https://api.typesafe.ai/v1/systemone`).
+- **Superseded:** the LLM behind LM Studio's OpenAI-compatible chat completions API (phase F), which asked the model to rate its own confidence.
 - **Optional:** a local ONNX toxicity classifier (phase I), if a non-generative model is preferred later.
 
 ## Ground rules
@@ -32,13 +32,13 @@ RabbitMQ exchange "comments" (topic)
 ```
 
 ### Decision policy
-- The model returns a `ContentLabel` (`Acceptable` / `Unacceptable`) and a confidence for it. The LLM answers `acceptable` / `unacceptable` with a confidence of 0–100, divided by 100. ONNX maps `non-toxic` → Acceptable and `toxic` → Unacceptable with `confidence = max(pToxic, 1 - pToxic)`; Jev maps `approve` → Acceptable and `reject` → Unacceptable.
-- `Acceptable` and `confidence >= ApproveThreshold` (default 0.85) → Approve
+- The model returns a `ContentLabel` (`Acceptable` / `Unacceptable`) and a confidence for it, plus optional `ModerationSignals` (toxicity, spam, personal data, each in [0, 1]). The `/v1/systemone` model maps the `verdict` choice `approve` → Acceptable and `reject` → Unacceptable, with the probability of the chosen option as the confidence. ONNX maps `non-toxic` → Acceptable and `toxic` → Unacceptable with `confidence = max(pToxic, 1 - pToxic)` and no signals.
 - `Unacceptable` and `confidence >= RejectThreshold` (default 0.90) → Reject
-- anything else → ManualReview
+- `Acceptable` and `confidence >= ApproveThreshold` (default 0.85) and no signal above its limit (`MaxToxicityForApprove` 0.35, `MaxSpamForApprove` 0.5, `MaxPersonalDataForApprove` 0.5) → Approve
+- anything else → ManualReview, with the review reasons (`LowConfidence`, `Toxicity`, `Spam`, `PersonalData`) stored next to the decision. Signals only ever stop an approval; they never reject.
 
 ### Model version
-For the LLM: `{Model}@{Version}+{first 12 hex chars of SHA-256 of the instructions and the response schema}`. `Version` is pinned in config, because the API does not expose the weights; the hash makes any prompt change a new version. For ONNX: `{Name}@{Version}+{first 12 hex chars of SHA-256 of the model file}`. For Jev, the `model` field returned by the API (e.g. `jev-1.13.0`).
+For `/v1/systemone`: `{Model}@{Version}+{first 12 hex chars of SHA-256 of the framing and the four questions (types, instructions, criteria)}`, the same scheme as for the LLM. For the LLM: `{Model}@{Version}+{first 12 hex chars of SHA-256 of the instructions and the response schema}`. `Version` is pinned in config, because the API does not expose the weights; the hash makes any prompt change a new version. For ONNX: `{Name}@{Version}+{first 12 hex chars of SHA-256 of the model file}`. For Jev, the `model` field returned by the API (e.g. `jev-1.13.0`).
 
 ### Solution layout
 ```
@@ -159,7 +159,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - Implemented: `RabbitMqConnection` is named (`ClientProvidedName` = `{ClientName}:{name}`); the consumer connection is resolved without a key and the publisher one as a keyed singleton (`publisher`). `OutboxPublisher` (Worker) claims up to `Outbox:BatchSize` (100) rows ordered by `created_at` with `FOR UPDATE SKIP LOCKED` in one transaction, publishes them one by one to the `comments` exchange with publisher confirms (`message-id` = row id, `type`, persistent, not `mandatory` – events nobody subscribes to are dropped instead of piling up), marks the confirmed ones and commits; the first failure stops the batch, and the confirmed part is still committed. A full batch is followed immediately by the next one, otherwise it waits `Outbox:PollInterval` (1 s). Failures back off exponentially (1 s → 30 s) and recreate the channel. `Outbox:PublishTimeout` (10 s) bounds a batch (e.g. a blocked connection). Only rows of known types are claimed (`type = ANY(...)`), so a row this version cannot route (e.g. written by a newer version during a rolling deploy) never takes up batch slots; the cleanup reports how many such rows wait. Cleanup every `Outbox:CleanupInterval` (1 h) deletes rows published more than `Outbox:Retention` (7 days) ago, in batches of 1000, using a partial index on `published_at`. Delivery is at least once (a crash between the confirm and the commit republishes), ordering is not guaranteed. Shutdown budget with the second connection: 20 s + 3 × 2 s + 2 connections × 2 × 3 s = 38 s < compose `stop_grace_period` 45 s.
 - After the E2 review: the channel is opened before the transaction, so no row locks are held while connecting; cleanup has its own error handling and runs even while publishing fails; recording a partly published batch is bounded (5 s) and keeps the original failure in the logs. Deferred: concurrent publishes within a batch (throughput), an outbox-lag metric (age of the oldest unpublished row) for H2, and a two-replica test (H3 verification already covers it in compose).
 
-### Phase F – Real model (local LLM via an OpenAI-compatible API)
+### Phase F – Real model (local LLM via an OpenAI-compatible API) – superseded by phase S
 
 Findings from a manual check against LM Studio (`basal-2.0-mini`, `POST /v1/chat/completions` with `response_format: json_schema`): the label was correct for an insulting Polish comment, the response `model` is the requested id, `logprobs` is `null`, one call took about 6 s, and LM Studio enforced the structure and the enum but **not** the numeric range (it answered `"confidence": 60` for a [0, 1] schema). So the model is asked for an integer 0–100, and the worker validates the range itself.
 
@@ -180,10 +180,48 @@ Findings from a manual check against LM Studio (`basal-2.0-mini`, `POST /v1/chat
 - After the F2 review: a timeout or an error status is confirmed by `GET models` before it counts as an outage – if the server still lists the model, the failure is attributed to the comment (counted retries, then the DLQ), so a comment that always times out or always gets a 500 cannot wait forever. 401/403/3xx (configuration) also mean the model is unavailable. An outage seen by a comment (including another model answering, which the model list does not show) keeps readiness unhealthy for a minute or until the model answers again. The back-off is doubled atomically and reset only when the model actually answered (not by a skipped duplicate). Deferred: a test for shutdown during the unavailable back-off. Checked: LM Studio answers a chat request for an unknown model id with 200 from the currently loaded model (and that model's id), so the response model check is what catches a wrong `Model:Llm:Model`; how it answers when the model cannot be loaded (e.g. out of memory) is still unknown.
 - Manual end-to-end check (see Verification).
 
-**F3. Polish quality check**
+**F3. Polish quality check** – superseded by S4
 - A small labelled sample of Polish comments in `tests/data/`, plus a report (opt-in test or console tool, run against LM Studio) showing the decision distribution, accuracy and latency at the default thresholds.
 - Check the loaded context window against `Consumer:MaxContentLength` (10 000 characters): LM Studio often loads models with 4096 tokens, so a long comment may be rejected (400) or truncated (`finish_reason: length`), which is deterministic and burns all retries before the DLQ.
 - Outcome: tune the instructions and thresholds, or pick a different model. **Decision point for the user.**
+
+### Phase S – Decision model via `/v1/systemone` (replaces the LLM of phase F)
+
+The user preferred the TypeSafe-compatible `/v1/systemone` API (llama.cpp `tools/server/README.md`, "TypeSafe-compatible API endpoints") to prompting a chat model, and asked to use all three question types. `LlmDecisionModel` is replaced; F1/F2's handling of an unavailable model (probe, uncounted requeue, readiness) is kept.
+
+Questions sent in one request (`state` = the comment as a plain string; question texts are constants in code and part of the model version):
+
+| id | type | role |
+|---|---|---|
+| `verdict` | choice `approve` / `reject` | the label; confidence = probability of the chosen option |
+| `toxicity` | score, 4 levels (none, mild, offensive, severe) | expected level ÷ 3 → `ModerationSignals.Toxicity` |
+| `spam` | noul | probability of true → `ModerationSignals.Spam` |
+| `personal_data` | noul | probability of true → `ModerationSignals.PersonalData` |
+
+**S0. Live contract check** `[x]`
+- Checked against the user's Basal server on `http://localhost:1234` (a laptop, CPU). It differs from the llama.cpp README in places, so the client follows what the server does:
+  - `GET /v1/models` returns `{"models":[{"name":"basal-2.0-mini","release_date":…,"description":…,"mode":"eager","temperature_per_prim":{"choice":…,"noul":…,"score":…},…}]}` – no `data[].id` and no `architecture.output_modalities` (llama.cpp's shape). The probe has to accept the server's shape (`models[].name`), and llama.cpp's (`data[].id` with `"decisions"`) if the client is to work with both.
+  - `GET /health` → 200 `{"status":"ok"}` (`/v1/health` is 404).
+  - `POST /v1/systemone`: every answer carries its `type`. `choice` → `choice`, `probabilities` per option, `confidence` = the chosen option's probability (not the normalized (p − 1/n)/(1 − 1/n) of the README example). `score` → `score` (expected level, fractional), `legend` `{"0":…}`, `probabilities` keyed `"0"`…`"3"`, `confidence` = the most likely level's probability. `noul` → `noul`, `probabilities` `{"true","false"}`, `confidence`. `usage` adds `questions`, `branches`, `latency_ms`, `longest_prompt_tokens`; the request's `model` field is ignored.
+  - Invalid requests → **422** `{"error":"…"}` (fewer than 2 options, unknown type, no questions, malformed JSON), answered in milliseconds; GET → 405; unknown paths → 404.
+  - Latency: 76–90 s for the four questions (about 20 s per question; ~600–700 input tokens). `Model:SystemOne:Timeout` must be several minutes, and `Host:ShutdownTimeout` (20 s) will cancel an evaluation in flight at shutdown – the message is then redelivered, which is correct but wastes the work.
+  - Answers: an insult with an ad link and a phone number → reject 0.99, toxicity 1.79/3, spam 0.94, personal data 0.95. A polite disagreement → approve 0.96, toxicity 0.74/3 (0.25 – close to the 0.35 limit), spam 0.09, personal data 0.03.
+
+**S1. Signals and review reasons in the domain** `[x]`
+- Core: `ModerationSignals` (toxicity, spam, personal data in [0, 1]) as an optional part of `ModelPrediction`; `DecisionPolicyOptions` limits `MaxToxicityForApprove` (0.35), `MaxSpamForApprove` and `MaxPersonalDataForApprove` (0.5), validated to [0, 1]; `DecisionPolicy.Decide` returns a `PolicyDecision` (decision + `ReviewReason`s), carried by `AnalysisResult.ReviewReasons`. A model without signals (Static, ONNX) behaves as before.
+- Persistence: migration `AddReviewReasonsAndSignals` – `review_reasons text[] NOT NULL DEFAULT '{}'` (enum names) and nullable `toxicity`, `spam_probability`, `personal_data_probability` with [0, 1] check constraints. Plain columns rather than one jsonb, so they can be queried and constrained.
+- `CommentAnalyzed` is unchanged (open point: whether it should carry the review reasons).
+- After the S1 review: the migration fills `review_reasons = {LowConfidence}` for existing ManualReview rows (the only way to manual review before S1), and a check constraint `ck_comment_analyses_review_reasons` enforces "reasons if and only if ManualReview" (verified on the compose database in a rolled-back transaction). `ReviewReason` names are stored, so the members must not be renamed. The new limits are listed in `appsettings.json`.
+
+**S2. `SystemOneDecisionModel`** `[ ]`
+- Replaces `LlmDecisionModel` (`Model:Provider=SystemOne`, options `BaseUrl`, `ApiKey`, `Model`, `Version`, `Timeout`). Builds the four questions, validates every answer (missing answer, unknown choice, probabilities outside [0, 1] or not summing to 1, choice not the argmax, score outside [0, 3], noul outside [0, 1] → `SystemOneResponseException`, counted retries then the DLQ), and maps them to `ModelPrediction` + `ModerationSignals`. A different response `model` → `ModelUnavailableException`.
+- Keeps F2's outage handling: a 422 is the comment's (or a configuration) failure; 3xx/401/403/404/408/429/5xx and timeouts are confirmed by the probe (`GET models` lists the model). Readiness also uses the probe.
+
+**S3. Wire it into the host** `[ ]`
+- Development settings and compose (`host.docker.internal:1234`), docs and CLAUDE.md, manual end-to-end check.
+
+**S4. Polish quality check** `[ ]` (replaces F3)
+- Labelled sample in `tests/data/` (criticism, swearing, threats, spam, personal data, injection, long comments), an opt-in report (accuracy, decisions, review reasons, latency), and the long-comment behaviour. **Decision point for the user:** question texts, thresholds and limits.
 
 ### Phase G – Jev alternative
 

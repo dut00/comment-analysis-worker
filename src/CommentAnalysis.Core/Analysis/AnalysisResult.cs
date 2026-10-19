@@ -7,8 +7,10 @@ namespace CommentAnalysis.Core.Analysis;
 /// The outcome of analyzing a single comment: the decision, the prediction it was based on,
 /// and the model that produced it.
 /// </summary>
+/// <param name="ReviewReasons">Why the comment needs manual review; empty for other decisions.</param>
 public sealed record AnalysisResult(
     Decision Decision,
+    IReadOnlyList<ReviewReason> ReviewReasons,
     ModelPrediction Prediction,
     ModelInfo Model,
     DateTimeOffset AnalyzedAt,

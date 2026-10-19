@@ -60,4 +60,19 @@ public class ModelPredictionTests
 
         Assert.Empty(prediction.Probabilities);
     }
+
+    [Fact]
+    public void Signals_DefaultToNull()
+    {
+        Assert.Null(new ModelPrediction(ContentLabel.Acceptable, 0.9).Signals);
+    }
+
+    [Theory]
+    [InlineData(-0.01, 0.0, 0.0)]
+    [InlineData(0.0, 1.01, 0.0)]
+    [InlineData(0.0, 0.0, double.NaN)]
+    public void ModerationSignals_Throw_WhenOutOfRange(double toxicity, double spam, double personalData)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new ModerationSignals(toxicity, spam, personalData));
+    }
 }

@@ -10,7 +10,8 @@ public sealed record ModelPrediction
     public ModelPrediction(
         ContentLabel label,
         double confidence,
-        IReadOnlyDictionary<string, double>? probabilities = null)
+        IReadOnlyDictionary<string, double>? probabilities = null,
+        ModerationSignals? signals = null)
     {
         if (!IsProbability(confidence))
         {
@@ -27,6 +28,7 @@ public sealed record ModelPrediction
 
         Label = label;
         Confidence = confidence;
+        Signals = signals;
 
         // Copied so a model cannot change the prediction after it was made.
         Probabilities = probabilities is null
@@ -42,6 +44,9 @@ public sealed record ModelPrediction
 
     /// <summary>Model-specific probabilities per raw label, kept for diagnostics.</summary>
     public IReadOnlyDictionary<string, double> Probabilities { get; }
+
+    /// <summary>Secondary assessments, or null when the model does not provide them.</summary>
+    public ModerationSignals? Signals { get; }
 
     private static bool IsProbability(double value) => double.IsFinite(value) && value is >= 0 and <= 1;
 }

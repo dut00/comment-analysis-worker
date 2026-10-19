@@ -43,6 +43,12 @@ internal sealed class CommentAnalysisEntityConfiguration : IEntityTypeConfigurat
                     value => value.Aggregate(0, (hash, pair) => HashCode.Combine(hash, pair.Key, pair.Value)),
                     value => new Dictionary<string, double>(value)));
 
+        // The default fills rows written before the column existed.
+        builder.Property(e => e.ReviewReasons).HasColumnName("review_reasons").HasDefaultValueSql("'{}'");
+        builder.Property(e => e.Toxicity).HasColumnName("toxicity");
+        builder.Property(e => e.SpamProbability).HasColumnName("spam_probability");
+        builder.Property(e => e.PersonalDataProbability).HasColumnName("personal_data_probability");
+
         builder.Property(e => e.ModelName).HasColumnName("model_name").HasMaxLength(ModelInfo.MaxLength);
         builder.Property(e => e.ModelVersion).HasColumnName("model_version").HasMaxLength(ModelInfo.MaxLength);
         builder.Property(e => e.AnalyzedAt).HasColumnName("analyzed_at");
@@ -53,8 +59,21 @@ internal sealed class CommentAnalysisEntityConfiguration : IEntityTypeConfigurat
             .IsUnique()
             .HasDatabaseName(CommentAnalysisEntity.UniqueCommentModelVersionIndex);
 
-        builder.ToTable(table => table.HasCheckConstraint(
-            "ck_comment_analyses_confidence_range",
-            "confidence >= 0 AND confidence <= 1"));
+        builder.ToTable(table =>
+        {
+            table.HasCheckConstraint("ck_comment_analyses_confidence_range", "confidence >= 0 AND confidence <= 1");
+            table.HasCheckConstraint("ck_comment_analyses_toxicity_range", "toxicity >= 0 AND toxicity <= 1");
+
+            // Every manual review has a reason, and no other decision has one.
+            table.HasCheckConstraint(
+                "ck_comment_analyses_review_reasons",
+                "(decision = 'ManualReview') = (cardinality(review_reasons) > 0)");
+            table.HasCheckConstraint(
+                "ck_comment_analyses_spam_probability_range",
+                "spam_probability >= 0 AND spam_probability <= 1");
+            table.HasCheckConstraint(
+                "ck_comment_analyses_personal_data_probability_range",
+                "personal_data_probability >= 0 AND personal_data_probability <= 1");
+        });
     }
 }

@@ -24,6 +24,40 @@ public class DecisionPolicyOptionsTests
         Assert.Empty(options.GetValidationErrors());
     }
 
+    [Theory]
+    [InlineData(0.0)]
+    [InlineData(1.0)]
+    public void GetValidationErrors_ReturnsEmpty_ForBoundarySignalLimits(double limit)
+    {
+        var options = new DecisionPolicyOptions
+        {
+            MaxToxicityForApprove = limit,
+            MaxSpamForApprove = limit,
+            MaxPersonalDataForApprove = limit,
+        };
+
+        Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Fact]
+    public void GetValidationErrors_ReportsEveryInvalidSignalLimit()
+    {
+        var options = new DecisionPolicyOptions
+        {
+            MaxToxicityForApprove = -0.1,
+            MaxSpamForApprove = 1.1,
+            MaxPersonalDataForApprove = double.PositiveInfinity,
+        };
+
+        var errors = options.GetValidationErrors();
+
+        Assert.Collection(
+            errors,
+            error => Assert.Contains("DecisionPolicy:MaxToxicityForApprove", error, StringComparison.Ordinal),
+            error => Assert.Contains("DecisionPolicy:MaxSpamForApprove", error, StringComparison.Ordinal),
+            error => Assert.Contains("DecisionPolicy:MaxPersonalDataForApprove", error, StringComparison.Ordinal));
+    }
+
     [Fact]
     public void GetValidationErrors_ReportsEveryInvalidThreshold()
     {

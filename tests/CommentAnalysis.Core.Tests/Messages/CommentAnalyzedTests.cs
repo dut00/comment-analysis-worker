@@ -20,6 +20,7 @@ public class CommentAnalyzedTests
         };
         var result = new AnalysisResult(
             Decision.Reject,
+            [],
             new ModelPrediction(ContentLabel.Unacceptable, 0.96),
             new ModelInfo("toxicity", "toxicity@1.0.0+abcdef123456"),
             new DateTimeOffset(2026, 10, 19, 12, 0, 1, TimeSpan.Zero),
