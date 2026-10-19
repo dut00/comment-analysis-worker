@@ -54,8 +54,9 @@ services:
       rabbitmq:
         condition: service_healthy
     # Must exceed the shutdown budget, which is capped in code: Host:ShutdownTimeout (20 s)
-    # + consumer channel close, abort and dispose (3 x 2 s) + RabbitMQ connection close and abort (2 x 3 s) = 32 s.
-    stop_grace_period: 40s
+    # + consumer channel close, abort and dispose (3 x 2 s)
+    # + consumer and publisher RabbitMQ connections, close and abort each (2 x 2 x 3 s) = 38 s.
+    stop_grace_period: 45s
     restart: unless-stopped
 
 volumes:

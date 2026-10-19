@@ -3,6 +3,7 @@ using CommentAnalysis.Infrastructure.Messaging;
 using CommentAnalysis.Infrastructure.Persistence;
 using CommentAnalysis.Worker;
 using CommentAnalysis.Worker.Consumers;
+using CommentAnalysis.Worker.Outbox;
 using Microsoft.Extensions.Options;
 
 if (HealthCheckCommand.IsRequested(args))
@@ -28,6 +29,12 @@ builder.Services.AddSingleton<IValidateOptions<ConsumerOptions>, ConsumerOptions
 // Registered after persistence and messaging, so migrations run before consuming starts.
 builder.Services.AddSingleton<CommentCreatedConsumer>();
 builder.Services.AddHostedService(serviceProvider => serviceProvider.GetRequiredService<CommentCreatedConsumer>());
+
+builder.Services.AddOptions<OutboxOptions>()
+    .Bind(builder.Configuration.GetSection(OutboxOptions.SectionName))
+    .ValidateOnStart();
+builder.Services.AddSingleton<IValidateOptions<OutboxOptions>, OutboxOptionsValidator>();
+builder.Services.AddHostedService<OutboxPublisher>();
 
 builder.Services.AddHealthChecks()
     .AddDbContextCheck<AnalysisDbContext>("postgres", tags: [HealthCheckTags.Ready])
