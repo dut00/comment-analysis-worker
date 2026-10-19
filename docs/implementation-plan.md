@@ -205,7 +205,7 @@ Questions sent in one request (`state` = the comment as a plain string; question
   - `POST /v1/systemone`: every answer carries its `type`. `choice` → `choice`, `probabilities` per option, `confidence` = the chosen option's probability (not the normalized (p − 1/n)/(1 − 1/n) of the README example). `score` → `score` (expected level, fractional), `legend` `{"0":…}`, `probabilities` keyed `"0"`…`"3"`, `confidence` = the most likely level's probability. `noul` → `noul`, `probabilities` `{"true","false"}`, `confidence`. `usage` adds `questions`, `branches`, `latency_ms`, `longest_prompt_tokens`; the request's `model` field is ignored.
   - Invalid requests → **422** `{"error":"…"}` (fewer than 2 options, unknown type, no questions, malformed JSON), answered in milliseconds; GET → 405; unknown paths → 404.
   - Latency: 76–90 s for the four questions (about 20 s per question; ~600–700 input tokens). `Model:SystemOne:Timeout` must be several minutes, and `Host:ShutdownTimeout` (20 s) will cancel an evaluation in flight at shutdown – the message is then redelivered, which is correct but wastes the work.
-  - A 10 220-character comment (the current `Consumer:MaxContentLength` is 10 000) got no answer within 20 minutes, while the server kept answering `/health` and `/v1/models` at once. Long comments are therefore the main risk: with a 5-minute timeout such a comment takes its counted retries (the probe still lists the model) and ends in the DLQ, but occupies the server for 4 × 5 minutes on the way. S4 must lower `MaxContentLength` to what the server answers in time. Worse, if the server keeps computing a request after the client gave up (to be checked in S3), the abandoned work delays the comments behind it: a normal comment can then time out too while the model is listed, and be dead-lettered after its retries (S2 review).
+  - A 10 220-character comment (the current `Consumer:MaxContentLength` is 10 000) got no answer within 20 minutes, while the server kept answering `/health` and `/v1/models` at once. Long comments are therefore the main risk: with a 5-minute timeout such a comment takes its counted retries (the probe still lists the model) and ends in the DLQ, but occupies the server for 4 × 5 minutes on the way. `MaxContentLength` must be lowered to what the server answers in time (done for the local setup in S3). Worse, if the server keeps computing a request after the client gave up (S3: it does), the abandoned work delays the comments behind it: a normal comment can then time out too while the model is listed, and be dead-lettered after its retries (S2 review).
   - Answers: an insult with an ad link and a phone number → reject 0.99, toxicity 1.79/3, spam 0.94, personal data 0.95. A polite disagreement → approve 0.96, toxicity 0.74/3 (0.25 – close to the 0.35 limit), spam 0.09, personal data 0.03.
 
 **S1. Signals and review reasons in the domain** `[x]`
@@ -222,9 +222,21 @@ Questions sent in one request (`state` = the comment as a plain string; question
 - After the S2 review: the request also names the `model` (ignored by the Basal server, needed by servers with several models), and a response is limited to 1 MB. Not verified yet: whether TypeSafe's cloud has a model list in one of the accepted shapes (phase G).
 - Development settings and compose switched to `SystemOne` in this step (the `Llm` provider no longer exists, and the tests load the Development settings); `CLAUDE.md` updated.
 
-**S3. End-to-end in compose** `[ ]`
-- The compose worker against the model server on the host (`host.docker.internal:1234` – the server must listen beyond localhost), the remaining docs (Verification, Open points), and a manual end-to-end check.
-- Check whether the server stops working on a request when the client disconnects; if not, lower `Consumer:MaxContentLength` before S4 (see S0).
+**S3. End-to-end in compose** `[x]`
+- The server does **not** stop working on a request when the client disconnects: a single-question request took 8.7 s on an idle server, but 82 s right after a four-question request was abandoned after 5 s. Requests are served one at a time.
+- Latency of the four questions grows with the comment: about 80–120 s for short comments, 202 s for 1000 characters (1352 input tokens), 364 s for 2500 characters (beyond the 5-minute timeout), and no answer within 20 minutes for 10 220. Development settings and compose therefore set `Consumer:MaxContentLength` to 1000 (about 1.5× below the timeout); the shipped default (10 000) is left alone, because the limit depends on the hardware. Longer comments go straight to the DLQ (verified with 1001 characters) – whether they should rather go to manual review is a product decision (S4). The limit counts characters and was measured on Polish prose; input that tokenizes badly (digits, random strings, emoji) can still exceed the timeout, so S4's samples include such input.
+- After the S3 review: Development and compose also set `Consumer:Prefetch` to 1. A prefetched message waits unacked, and `Prefetch × (Model:SystemOne:Timeout + the 30 s maximum retry delay)` must stay well below RabbitMQ's `consumer_timeout` (30 min): otherwise the broker closes the channel, and the redeliveries count towards `x-delivery-limit`. The limit counts characters and was measured on Polish prose; input that tokenizes badly (digits, random strings, emoji) can still exceed the timeout, so S4's samples include such input.
+- After the S3 review: Development and compose also set `Consumer:Prefetch` to 1. A prefetched message waits unacked, and `Prefetch × (Model:SystemOne:Timeout + the 30 s maximum retry delay)` must stay well below RabbitMQ's `consumer_timeout` (30 min): otherwise the broker closes the channel, and the redeliveries count towards `x-delivery-limit`.
+- Compose against the Basal server on the host (it listens on `0.0.0.0:1234`): readiness Healthy from the container, the migration applied, and four Polish comments processed in 82–101 s each and their events published:
+
+  | comment | decision | reasons | confidence | toxicity | spam | personal data |
+  |---|---|---|---|---|---|---|
+  | polite praise | Approve | – | 0.870 | 0.19 | 0.07 | 0.03 |
+  | insult aimed at the author | Reject | – | 0.924 | 0.60 | 0.28 | 0.02 |
+  | loan advert with a link | Reject | – | 0.970 | 0.35 | 0.96 | 0.03 |
+  | agreement plus a phone number and an address | ManualReview | LowConfidence, Spam, PersonalData | 0.732 | 0.27 | 0.54 | 0.97 |
+
+- Not checked live: stopping the model server (it is the user's process); unit tests cover the unavailable model, and F2 verified the consumer side. Observed: the worker logs `libgssapi_krb5.so.2: cannot open shared object file` once at startup (the runtime image lacks the Kerberos library, which only Negotiate authentication would use); harmless, to be silenced in H4 if wanted.
 
 **S4. Polish quality check** `[ ]` (replaces F3)
 - Labelled sample in `tests/data/` (criticism, swearing, threats, spam, personal data, injection, long comments), an opt-in report (accuracy, decisions, review reasons, latency), and the long-comment behaviour. **Decision point for the user:** question texts, thresholds and limits.
@@ -259,7 +271,7 @@ Questions sent in one request (`state` = the comment as a plain string; question
 
 ### Phase I – Optional local ONNX classifier
 
-Deferred: the default model is the LLM (phase F). Kept for a non-generative alternative (faster, calibrated probabilities).
+Deferred: the default model is the `/v1/systemone` decision model (phase S). Kept for a non-generative alternative (faster, calibrated probabilities).
 
 **I1. Model export script**
 - `scripts/export-model.sh` and `.ps1`: run Python `optimum` in a container to export the HF model (default `citizenlab/distilbert-base-multilingual-cased-toxicity`) to `models/<name>/model.onnx` + `vocab.txt` + `config.json`. `models/` is git-ignored.
@@ -283,13 +295,12 @@ Deferred: the default model is the LLM (phase F). Kept for a non-generative alte
 1. Start the `/v1/systemone` server with `basal-2.0-mini` on port 1234, listening beyond localhost (the container reaches it through `host.docker.internal`).
 2. `docker compose up --build`
 3. RabbitMQ UI at http://localhost:15672: publish a `CommentCreated` JSON message to the `comments` exchange with routing key `comment.created`.
-4. `SELECT * FROM comment_analyses;` shows the decision, confidence and model_version.
+4. `SELECT decision, review_reasons, confidence, toxicity, spam_probability, personal_data_probability, model_version FROM comment_analyses;` shows the decision with its reasons, the signals and the model version.
 5. A queue bound to `comment.analyzed` receives the event.
-6. `curl http://localhost:7461/health/ready` returns Healthy. A malformed message lands in the DLQ.
+6. `curl http://localhost:7461/health/ready` returns Healthy. A malformed message, or a comment over 1000 characters, lands in the DLQ.
 
 ## Open points
-- Quality of the LLM on Polish comments, and how well its self-reported confidence works with the thresholds (F3).
-- Prompt injection: a comment can try to steer the LLM. The answer is limited to the schema, so at worst a comment gets the wrong label; F3 should include such samples.
-- Throughput: about 6 s per comment on one LM Studio instance.
-- Threshold values (0.85 / 0.90 are starting points).
-- Whether the comment service should consume `CommentAnalyzed`, and what payload it needs beyond the current one.
+- Quality of the decision model on Polish comments, and the thresholds and signal limits (S4).
+- Prompt injection: a comment can try to steer the model. It can only shift the probabilities of the fixed options, so at worst a comment gets the wrong decision; S4 includes such samples.
+- Throughput: about 80–120 s per short comment and about 200 s at the 1000-character limit (four questions) on one laptop CPU; the server works through requests one at a time and does not stop on a client disconnect.
+- Whether the comment service should consume `CommentAnalyzed`, and whether the event should carry the review reasons.

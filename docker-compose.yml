@@ -47,6 +47,11 @@ services:
       Model__SystemOne__BaseUrl: http://host.docker.internal:1234/v1/
       Model__SystemOne__Model: basal-2.0-mini
       Model__SystemOne__Version: "2.0"
+      # The local model needs about 200 s for 1000 characters (the default Model:SystemOne:Timeout is 5 min), and it
+      # keeps working on a request the worker gave up on, so longer comments would delay the ones behind them.
+      Consumer__MaxContentLength: "1000"
+      # One request at a time anyway; more prefetched messages only wait unacked towards consumer_timeout (30 min).
+      Consumer__Prefetch: "1"
       Database__ConnectionString: Host=postgres;Port=5432;Database=comment_analysis;Username=postgres;Password=postgres
       Database__MigrateOnStartup: "true"
       RabbitMq__Uri: amqp://guest:guest@rabbitmq:5672/
