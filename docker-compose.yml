@@ -41,13 +41,21 @@ services:
       dockerfile: src/CommentAnalysis.Worker/Dockerfile
     image: comment-analysis-worker:local
     environment:
-      Model__Provider: Static
+      # The model runs in LM Studio on the host (server on port 1234 with "Serve on Local Network").
+      # Use Model__Provider: Static to run without it.
+      Model__Provider: Llm
+      Model__Llm__BaseUrl: http://host.docker.internal:1234/v1/
+      Model__Llm__Model: basal-2.0-mini
+      Model__Llm__Version: "2.0"
       Database__ConnectionString: Host=postgres;Port=5432;Database=comment_analysis;Username=postgres;Password=postgres
       Database__MigrateOnStartup: "true"
       RabbitMq__Uri: amqp://guest:guest@rabbitmq:5672/
     ports:
       # Uncommon port on purpose: 8080, 5000 and similar are usually taken by the main applications.
       - "127.0.0.1:7461:7461"
+    # Docker Desktop resolves host.docker.internal by itself; Docker Engine on Linux needs the mapping.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
