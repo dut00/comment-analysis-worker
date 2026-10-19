@@ -3,6 +3,7 @@ using CommentAnalysis.Core.Decisions;
 using CommentAnalysis.Core.Models;
 using CommentAnalysis.Infrastructure.Messaging;
 using CommentAnalysis.Infrastructure.Models;
+using CommentAnalysis.Infrastructure.Models.Llm;
 using CommentAnalysis.Infrastructure.Options;
 using CommentAnalysis.Infrastructure.Persistence;
 using Microsoft.Extensions.Configuration;
@@ -37,6 +38,10 @@ public static partial class DependencyInjection
 
         services.TryAddSingleton(TimeProvider.System);
         services.AddSingleton(sp => new DecisionPolicy(sp.GetRequiredService<IOptions<DecisionPolicyOptions>>().Value));
+        services.AddHttpClient(LlmDecisionModel.HttpClientName, (serviceProvider, client) =>
+                client.Timeout = serviceProvider.GetRequiredService<IOptions<ModelOptions>>().Value.Llm.Timeout)
+            // A redirect would silently turn the POST into a GET to another location.
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
         services.AddSingleton(CreateDecisionModel);
         services.AddSingleton<CommentAnalyzer>();
         services.AddScoped<CommentProcessor>();
@@ -114,6 +119,9 @@ public static partial class DependencyInjection
                 }
 
                 return new StaticDecisionModel(options.Static);
+
+            case ModelProvider.Llm:
+                return new LlmDecisionModel(serviceProvider.GetRequiredService<IHttpClientFactory>(), options.Llm);
 
             default:
                 throw new InvalidOperationException($"Unsupported model provider '{options.Provider}'.");

@@ -1,3 +1,5 @@
+using CommentAnalysis.Infrastructure.Models.Llm;
+
 namespace CommentAnalysis.Infrastructure.Models;
 
 /// <summary>
@@ -11,10 +13,15 @@ public sealed class ModelOptions
     public ModelProvider? Provider { get; set; }
 
     public StaticModelOptions Static { get; set; } = new();
+
+    public LlmModelOptions Llm { get; set; } = new();
 }
 
 public enum ModelProvider
 {
     /// <summary>Returns a fixed prediction. For local development and tests only.</summary>
     Static,
+
+    /// <summary>A chat model served through an OpenAI-compatible API, e.g. a local model in LM Studio.</summary>
+    Llm,
 }
