@@ -145,14 +145,16 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ### Phase E – Outgoing events
 
-**E1. Transactional outbox – write side**
+**E1. Transactional outbox – write side** `[x]`
 - `outbox_messages` table and migration. `CommentAnalyzed` is written in the same transaction as the analysis row.
 - Test: both rows exist after processing, or neither does.
+- Implemented: `IAnalysisStore.SaveAsync` keeps its signature; `EfAnalysisStore` adds the analysis row and an `OutboxMessageEntity` (`id` UUIDv7 – later the AMQP message id, `type` = message type name, `payload` jsonb, `created_at` = analysis time, `published_at` null) in one `SaveChanges`, i.e. one transaction. A duplicate analysis rolls back both rows, so a redelivery never enqueues a second event; a test appends a failing statement after both inserts and checks that neither row remains. `type` is an explicit constant (`CommentAnalyzed.MessageType`), not the CLR class name. A partial index on `created_at WHERE published_at IS NULL` serves the publisher. Cleanup of published rows is part of E2.
 
 **E2. Outbox publisher**
 - A `BackgroundService` that polls unpublished rows (`FOR UPDATE SKIP LOCKED`, so multiple replicas are safe), publishes with publisher confirms and marks the rows as published.
 - Use a separate AMQP connection for publishing (distinct `ClientProvidedName`): RabbitMQ blocks publishing connections under flow control or resource alarms, which must not stall the consumer's acks. Make `RabbitMqConnection` support named connections ("consumer", "publisher") before this step.
 - End-to-end integration test: `CommentCreated` in → `CommentAnalyzed` out.
+- Notes from the E1 review: the payload is jsonb, so key order, whitespace and number formatting are normalized – publish it as is, and consumers must not rely on exact bytes (deduplicate on the message id). Map `type` to a routing key explicitly and fail loudly on an unknown type. Clean up published rows (e.g. delete after a retention period; may need an index on `published_at`).
 
 ### Phase F – Real model (ONNX)
 
