@@ -12,7 +12,7 @@ public sealed partial class RabbitMqConnection(IOptions<RabbitMqOptions> options
     : IAsyncDisposable
 {
     /// <summary>Bounds shutdown when the broker is unreachable; the close handshake otherwise has no limit.</summary>
-    private static readonly TimeSpan CloseTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan CloseTimeout = TimeSpan.FromSeconds(3);
 
     private readonly SemaphoreSlim _lock = new(1, 1);
     private IConnection? _connection;
@@ -56,18 +56,31 @@ public sealed partial class RabbitMqConnection(IOptions<RabbitMqOptions> options
     {
         if (_connection is not null)
         {
+            // The client does not always honour its own close timeout (observed: a close hanging for 30 s),
+            // so each step is also capped here. Shutdown must never wait on the broker beyond this budget.
             try
             {
-                await _connection.CloseAsync(CloseTimeout).ConfigureAwait(false);
+                await _connection.CloseAsync(CloseTimeout).WaitAsync(CloseTimeout).ConfigureAwait(false);
             }
             catch (Exception exception)
             {
-                // Shutdown must not hang or fail because the broker is gone; drop the connection instead.
                 LogCloseFailed(logger, exception);
-                await _connection.AbortAsync(CloseTimeout).ConfigureAwait(false);
+                try
+                {
+                    await _connection.AbortAsync(CloseTimeout).WaitAsync(CloseTimeout).ConfigureAwait(false);
+                }
+                catch (Exception abortException)
+                {
+                    LogAbortFailed(logger, abortException);
+                }
             }
 
-            _connection.Dispose();
+            // Disposing a connection that is still open would block on closing it again; the process is
+            // exiting anyway, so leave it to the OS in that case (in tests this leaks one socket per such host).
+            if (!_connection.IsOpen)
+            {
+                _connection.Dispose();
+            }
         }
 
         _lock.Dispose();
@@ -78,4 +91,7 @@ public sealed partial class RabbitMqConnection(IOptions<RabbitMqOptions> options
 
     [LoggerMessage(EventId = 201, Level = LogLevel.Warning, Message = "Closing the RabbitMQ connection failed; aborting it")]
     private static partial void LogCloseFailed(ILogger logger, Exception exception);
+
+    [LoggerMessage(EventId = 202, Level = LogLevel.Warning, Message = "Aborting the RabbitMQ connection did not complete in time; abandoning it")]
+    private static partial void LogAbortFailed(ILogger logger, Exception exception);
 }
