@@ -69,7 +69,7 @@ public static partial class DependencyInjection
     }
 
     /// <summary>
-    /// Registers the shared RabbitMQ connection and the background topology declaration.
+    /// Registers the RabbitMQ connections (consumer, and the keyed publisher one) and the background topology declaration.
     /// The host starts even when RabbitMQ is unavailable; see <see cref="RabbitMqTopologyInitializer"/>.
     /// </summary>
     public static IServiceCollection AddCommentAnalysisMessaging(this IServiceCollection services, IConfiguration configuration)
@@ -83,12 +83,20 @@ public static partial class DependencyInjection
         services.AddSingleton<IValidateOptions<RabbitMqOptions>, RabbitMqOptionsValidator>();
 
         services.TryAddSingleton(TimeProvider.System);
-        services.AddSingleton<RabbitMqConnection>();
+        services.AddSingleton(serviceProvider => CreateConnection(serviceProvider, RabbitMqConnection.ConsumerName));
+        services.AddKeyedSingleton(
+            RabbitMqConnection.PublisherName,
+            (serviceProvider, _) => CreateConnection(serviceProvider, RabbitMqConnection.PublisherName));
         services.AddSingleton<RabbitMqTopologyInitializer>();
         services.AddHostedService(serviceProvider => serviceProvider.GetRequiredService<RabbitMqTopologyInitializer>());
 
         return services;
     }
+
+    private static RabbitMqConnection CreateConnection(IServiceProvider serviceProvider, string name) => new(
+        serviceProvider.GetRequiredService<IOptions<RabbitMqOptions>>(),
+        serviceProvider.GetRequiredService<ILogger<RabbitMqConnection>>(),
+        name);
 
     private static IDecisionModel CreateDecisionModel(IServiceProvider serviceProvider)
     {
