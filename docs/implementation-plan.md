@@ -69,8 +69,8 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - `Decision` enum, `ContentLabel` enum (model-agnostic label), `ModelPrediction` (label, confidence validated to [0, 1], raw probabilities), `ModelInfo` (name, version).
 - Done when: the project compiles and validation tests pass.
 
-**A3. Decision policy**
-- `DecisionPolicyOptions` (thresholds, validated to [0.5, 1]) and `DecisionPolicy.Decide(ModelPrediction)`.
+**A3. Decision policy** `[x]`
+- `DecisionPolicyOptions` (thresholds, validated to [0.5, 1] via `GetValidationErrors()`, which the host will reuse for `ValidateOnStart`) and `DecisionPolicy.Decide(ModelPrediction)`.
 - Unit tests: each outcome, exact boundary values, and invalid options.
 - Done when: all policy tests pass.
 
