@@ -22,7 +22,8 @@ public sealed class SystemOneModelOptions
     public string Version { get; set; } = string.Empty;
 
     /// <summary>
-    /// Bounds one request, which asks all questions. A local model on a CPU took 76–90 s for the four questions.
+    /// Bounds one request, which asks all questions: about 11 s for the local Basal server's GGUF build on a CPU (its
+    /// eager mode took 80–120 s, and 202 s at 1000 characters), under a second for Jev in the cloud.
     /// </summary>
     public TimeSpan Timeout { get; set; } = TimeSpan.FromMinutes(5);
 }

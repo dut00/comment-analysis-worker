@@ -31,4 +31,4 @@ basal-serve --model "C:\Users\Kuba\.lmstudio\models\Remek\basal-2.0-mini-GGUF" -
 ```
 
 - `--name basal-2.0-mini` is required: the server reports this name in every response, and the worker treats any other name as another model (the comments wait). Without it, `basal-serve` on Windows reports the whole `--model` path.
-- See the README ("Decision model") for how to check the server, the expected latency and the limits.
+- See the README ([Basal on a local server](../README.md#basal-on-a-local-server)) for how to check the server, the expected latency and the limits.

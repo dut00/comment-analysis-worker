@@ -311,8 +311,11 @@ The separate Jev client planned here is not needed: `SystemOneDecisionModel` alr
 - Nothing was dead-lettered (the two DLQ messages are from earlier manual checks). No code change was needed: D2's shutdown and the outbox's `FOR UPDATE SKIP LOCKED` held under load, and no comment got a second analysis or outbox row. With one model version a second analysis is impossible anyway (the unique key); the runs did not measure how often the idempotency check skipped a redelivered comment.
 - After the H2 review: `verify` keeps the run's events (unacked, its queue is deleted only when the run passed), so a timed-out or failed check can be repeated; each run has its own event queue that expires after an hour; `publish` writes the run file even when interrupted. The first run's figures above came from the previous version of the script, with the same checks.
 
-**H3. Documentation**
+**H3. Documentation** `[x]`
 - README: architecture, configuration reference, running locally, sending a test comment, swapping models, and the production migration bundle.
+- Rewritten as a whole: how it works (flow, the four questions, the policy, guarantees, failures), a quick start with the static model, sending a test comment (bash: `rabbitmqadmin` in the RabbitMQ container with the payload from stdin; PowerShell: RabbitMQ's HTTP API, because Windows PowerShell 5.1 adds a byte order mark when piping to a program and the worker dead-letters that as malformed – both checked), running without containers, the models side by side and how to switch or add one, the message contracts and topology, a configuration reference of every section, health and metrics, scaling, and deploying (secrets, grace period, migration bundle, RabbitMQ). The quick start commands were run as written.
+- After the H3 review: production examples use TLS (`amqps://`, `SSL Mode=VerifyFull`) and the bundle takes its connection string from the environment, not the command line; the README lists the RabbitMQ permissions the worker needs (configure included, since it always declares its topology); the observability command keeps the `-f` files; the Retry-After cap, the Basal server's missing authentication and the data-processing question for Jev are stated. Open questions for H4: whether a RabbitMQ policy can raise the delivery limit while the worker declares `x-delivery-limit` (for limits, RabbitMQ applies the lower of policy and argument), and whether the limit is exactly 5 crashes.
+- Migration bundle checked: `dotnet ef migrations bundle` builds `efbundle`; on a fresh database it applied all five migrations, on the compose database it applied none ("already up to date"); it takes an exclusive lock first.
 
 **H4. Production hardening**
 - Enforce TLS outside Development: reject `amqp://` (require `amqps://`) and PostgreSQL connection strings without `SSL Mode=VerifyFull`.
@@ -343,7 +346,7 @@ Deferred: the default model is the `/v1/systemone` decision model (phase S). Kep
 ---
 
 ## Verification (end-to-end, after S3)
-1. Start the `/v1/systemone` server with `basal-2.0-mini` on port 1234, listening beyond localhost (the container reaches it through `host.docker.internal`). On the author's laptop the best configuration is `basal-serve` with the Q8_0 GGUF build – the exact command is in the README ("Decision model").
+1. Start the `/v1/systemone` server with `basal-2.0-mini` on port 1234, listening beyond localhost (the container reaches it through `host.docker.internal`). On the author's laptop the best configuration is `basal-serve` with the Q8_0 GGUF build – the exact command is in the README ("Basal on a local server").
 2. `docker compose up --build`
 3. RabbitMQ UI at http://localhost:15672: publish a `CommentCreated` JSON message to the `comments` exchange with routing key `comment.created`.
 4. `SELECT decision, review_reasons, confidence, toxicity, spam_probability, personal_data_probability, model_version FROM comment_analyses;` shows the decision with its reasons, the signals and the model version.
