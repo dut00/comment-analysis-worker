@@ -1,0 +1,18 @@
+# Switches the worker to TypeSafe's Jev through OpenRouter instead of the local Basal server:
+#   docker compose -f docker-compose.yml -f docker-compose.jev.yml up --build -d
+# Back to Basal: docker compose up --build -d
+# The key comes from .env (git-ignored): OPENROUTER_API_KEY=...
+services:
+  worker:
+    environment:
+      Model__SystemOne__BaseUrl: https://openrouter.ai/api/v1/
+      # The dated snapshot the responses name; typesafe/jev-1.14 would never match it.
+      Model__SystemOne__Model: typesafe/jev-1.14-20261014
+      # Mirrors the snapshot; part of the stored model version.
+      Model__SystemOne__Version: "1.14-20261014"
+      Model__SystemOne__Timeout: "00:00:30"
+      Model__SystemOne__ApiKey: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in .env}
+      # The cloud serves many requests at once, unlike the local server. Keep Prefetch >= Concurrency and
+      # Prefetch x (Timeout + 30 s longest retry wait) = 8 min well below RabbitMQ's consumer_timeout (30 min).
+      Consumer__Prefetch: "8"
+      Consumer__Concurrency: "4"

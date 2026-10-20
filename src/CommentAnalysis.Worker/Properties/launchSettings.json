@@ -9,6 +9,21 @@
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development"
       }
+    },
+    "jev": {
+      "commandName": "Project",
+      "dotnetRunMessages": true,
+      "launchBrowser": false,
+      "applicationUrl": "http://localhost:7461",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "Model__SystemOne__BaseUrl": "https://openrouter.ai/api/v1/",
+        "Model__SystemOne__Model": "typesafe/jev-1.14-20261014",
+        "Model__SystemOne__Version": "1.14-20261014",
+        "Model__SystemOne__Timeout": "00:00:30",
+        "Consumer__Prefetch": "8",
+        "Consumer__Concurrency": "4"
+      }
     }
   }
 }

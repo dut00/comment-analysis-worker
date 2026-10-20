@@ -49,7 +49,7 @@ src/CommentAnalysis.Infrastructure  – ONNX, Jev, EF Core/Postgres, RabbitMQ
 src/CommentAnalysis.Worker          – host, consumer, outbox publisher, health endpoints, Dockerfile
 tests/CommentAnalysis.Core.Tests
 tests/CommentAnalysis.IntegrationTests  – Testcontainers (Postgres, RabbitMQ)
-scripts/                            – model export
+scripts/                            – quality report, model comparison (file-based apps); model export (phase I)
 docker-compose.yml, README.md, docs/
 ```
 
@@ -271,8 +271,9 @@ The separate Jev client planned here is not needed: `SystemOneDecisionModel` alr
   - After the G2 review: OpenRouter's catalogue keeps describing the model while its provider is down, so the probe alone would blame the comments for a provider outage (counted retries, then the DLQ). Now 502 and 503 (OpenRouter: provider error, no provider available; llama.cpp: loading) mean the model is unavailable straight away, and the description counts only endpoints with `status` ≥ 0 (OpenRouter marks degraded or down providers below 0). 500 and 504 stay probed, because one comment can cause them. A model id with a slash is looked up by its description first: OpenRouter's whole list is about 800 KB, close to the 1 MB response limit. The quality report shows latency with one decimal.
   - Latency: about 0.3–0.9 s per comment for the four questions (OpenRouter reports p50 161 ms per request); cost about $0.00002 per comment (≈ 400 input tokens at $0.042 per million).
 - Quality report (`docs/quality/jev-1.14-report.md`, regenerated from the saved results, same 32 comments and questions, model version `typesafe/jev-1.14-20261014@1.14-20261014+cef8109c93be`): **30 of 32 as expected** (Basal 2.0 mini: 28), 0 wrongly approved, 2 wrongly rejected (`rude-2` at 0.94 and `personal-2` at 0.96 – the same kind as Basal's), 3 manual reviews; the verdict label was right for all 27 clear cases. Confidences are mostly 1.00, so the thresholds hardly matter (reject ≥ 0.95 trades one wrong rejection for two more reviews). The spam signal is clean on rude comments (≤ 0.20, Basal 0.64–0.75).
-- Compose against OpenRouter (an override, not committed: `BaseUrl`, `Model`, `Version`, `Timeout` 30 s, `ApiKey: ${OPENROUTER_API_KEY}`): readiness Healthy; four Polish comments → Approve, Reject (insult), Reject (loan spam), ManualReview (LowConfidence, PersonalData) in 0.3–0.5 s each. With an invalid key: readiness stayed Healthy until the first comment, which then waited (1 s, 2 s, 4 s …) with readiness Unhealthy and nothing dead-lettered; with the key restored it was approved.
+- Compose against OpenRouter (then an override outside the repository: `BaseUrl`, `Model`, `Version`, `Timeout` 30 s, `ApiKey: ${OPENROUTER_API_KEY}`): readiness Healthy; four Polish comments → Approve, Reject (insult), Reject (loan spam), ManualReview (LowConfidence, PersonalData) in 0.3–0.5 s each. With an invalid key: readiness stayed Healthy until the first comment, which then waited (1 s, 2 s, 4 s …) with readiness Unhealthy and nothing dead-lettered; with the key restored it was approved.
 - `scripts/quality-report.cs` reads the API key from `SYSTEMONE_API_KEY` (never an argument).
+- After G2, at the user's request: switching is documented in the README and committed – `docker-compose.jev.yml` (a compose override: the model, a 30 s timeout, the key from `.env` with a start failure if it is missing, Prefetch 8 and Concurrency 4, i.e. 8 × (30 s + 30 s) = 8 min below `consumer_timeout`) and the `jev` launch profile for `dotnet run` (the same settings; the key from the shell). Both paths were checked live (readiness Healthy, 4 concurrent handlers). `scripts/compare-models.cs` puts saved quality results side by side at the current default policy (`docs/quality/comparison.md`, no model queried).
 - Not checked: TypeSafe's own API (`api.typesafe.ai`, no key), rate limits and `Retry-After` in practice, a 529.
 
 ### Phase H – Production readiness

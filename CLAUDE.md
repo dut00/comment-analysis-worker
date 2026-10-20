@@ -29,6 +29,8 @@ dotnet ef migrations add <Name> --project src/CommentAnalysis.Infrastructure --s
 dotnet run --project src/CommentAnalysis.Worker  # local run on http://localhost:7461 (same port as in the container; deliberately not 8080/5000). Needs Postgres (localhost:5433) and RabbitMQ (localhost:5672) from compose
 basal-serve --model "C:\Users\Kuba\.lmstudio\models\Remek\basal-2.0-mini-GGUF" --mode gguf --gguf "C:\Users\Kuba\.lmstudio\models\Remek\basal-2.0-mini-GGUF\basal-2.0-mini-Q8_0.gguf" --name basal-2.0-mini --port 1234  # the decision model for Development and compose (best on the author's laptop; see README)
 docker compose up --build -d                   # run in containers (worker http://localhost:7461, RabbitMQ UI http://localhost:15672 guest/guest, Postgres localhost:5433)
+docker compose -f docker-compose.yml -f docker-compose.jev.yml up --build -d  # the same with Jev through OpenRouter instead of Basal (key in .env; README)
+dotnet run scripts/compare-models.cs -- tests/data/polish-comments.json docs/quality/comparison.md basal-2.0-mini=docs/quality/basal-2.0-mini-results.json jev-1.14=docs/quality/jev-1.14-results.json  # side-by-side model comparison from saved results
 WORKER_OTLP_ENDPOINT=http://aspire-dashboard:18889 docker compose --profile observability up -d  # also export metrics to the Aspire Dashboard (http://localhost:18888)
 docker compose down -v                         # reset local data; needed after changing RabbitMQ queue arguments (PRECONDITION_FAILED)
 ```
