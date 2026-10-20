@@ -20,7 +20,7 @@ dotnet test
 
 The worker queries a decision model through the TypeSafe-compatible `POST /v1/systemone` API (`Model:Provider=SystemOne`). Development settings and compose expect `basal-2.0-mini` on port 1234 of the host (compose reaches it through `host.docker.internal`).
 
-The configuration that works best on the author's laptop (CPU) runs the Q8_0 GGUF build with `basal-serve`:
+The configuration that works best on the author's laptop (CPU) runs the Q8_0 GGUF build with `basal-serve` (installation and the model files: [docs/basal-windows.md](docs/basal-windows.md)):
 
 ```powershell
 basal-serve --model "C:\Users\Kuba\.lmstudio\models\Remek\basal-2.0-mini-GGUF" --mode gguf --gguf "C:\Users\Kuba\.lmstudio\models\Remek\basal-2.0-mini-GGUF\basal-2.0-mini-Q8_0.gguf" --name basal-2.0-mini --port 1234
