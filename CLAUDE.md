@@ -31,6 +31,9 @@ basal-serve --model "C:\Users\Kuba\.lmstudio\models\Remek\basal-2.0-mini-GGUF" -
 docker compose up --build -d                   # run in containers (worker http://localhost:7461, RabbitMQ UI http://localhost:15672 guest/guest, Postgres localhost:5433)
 docker compose -f docker-compose.yml -f docker-compose.jev.yml up --build -d  # the same with Jev through OpenRouter instead of Basal (key in .env; README)
 dotnet run scripts/compare-models.cs -- tests/data/polish-comments.json docs/quality/comparison.md basal-2.0-mini=docs/quality/basal-2.0-mini-results.json jev-1.14=docs/quality/jev-1.14-results.json  # side-by-side model comparison from saved results
+docker compose -f docker-compose.yml -f docker-compose.replicas.yml up --build -d  # two worker replicas (no host port)
+docker compose -f docker-compose.yml -f docker-compose.static.yml up --build -d  # the static model instead of Basal (no model server needed; combine with the replicas override for the load test)
+dotnet run scripts/load-test.cs -- publish 1000 load-test-run.json && dotnet run scripts/load-test.cs -- verify load-test-run.json  # load test against compose with a fast model: nothing lost or analyzed twice
 WORKER_OTLP_ENDPOINT=http://aspire-dashboard:18889 docker compose --profile observability up -d  # also export metrics to the Aspire Dashboard (http://localhost:18888)
 docker compose down -v                         # reset local data; needed after changing RabbitMQ queue arguments (PRECONDITION_FAILED)
 ```

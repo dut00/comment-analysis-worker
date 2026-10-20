@@ -480,3 +480,6 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# Load test ids (scripts/load-test.cs)
+load-test-*.json

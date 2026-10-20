@@ -1,0 +1,9 @@
+# Runs two worker replicas (phase H2):
+#   docker compose -f docker-compose.yml -f docker-compose.replicas.yml up --build -d
+# Combine with docker-compose.jev.yml for the cloud model. The replicas publish no host port (they would clash on
+# 7461); each one's health is in `docker compose ps`.
+services:
+  worker:
+    ports: !reset []
+    deploy:
+      replicas: 2

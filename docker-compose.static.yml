@@ -1,0 +1,7 @@
+# Switches the worker to the static model (approves everything at 0.99, instantly), e.g. for the load test:
+#   docker compose -f docker-compose.yml -f docker-compose.static.yml up --build -d
+# Back to Basal: docker compose up --build -d
+services:
+  worker:
+    environment:
+      Model__Provider: Static

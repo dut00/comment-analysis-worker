@@ -49,7 +49,7 @@ src/CommentAnalysis.Infrastructure  – ONNX, Jev, EF Core/Postgres, RabbitMQ
 src/CommentAnalysis.Worker          – host, consumer, outbox publisher, health endpoints, Dockerfile
 tests/CommentAnalysis.Core.Tests
 tests/CommentAnalysis.IntegrationTests  – Testcontainers (Postgres, RabbitMQ)
-scripts/                            – quality report, model comparison (file-based apps); model export (phase I)
+scripts/                            – quality report, model comparison, load test (file-based apps); model export (phase I)
 docker-compose.yml, README.md, docs/
 ```
 
@@ -297,8 +297,19 @@ The separate Jev client planned here is not needed: `SystemOneDecisionModel` alr
 - After the H1b review: `WorkerFactory` blanks both endpoint settings, so a machine with an ambient OTLP endpoint neither breaks the tests nor receives their metrics. Not done: honouring `OTEL_SDK_DISABLED` explicitly, the EF Core meter, and a production rule that a remote collector must use https (H4).
 - Manual check (static model): four comments (three approved, one too long) and a malformed message; the dashboard showed `comment_analysis.comments.analyzed` = 4 with `Approve`/`ManualReview` and `static@1.0.0`, the other worker instruments, and the Npgsql, HTTP and ASP.NET Core meters.
 
-**H2. Graceful shutdown and scaling**
+**H2. Graceful shutdown and scaling** `[x]`
 - Shutdown behaviour itself is implemented in D2; here verify it under load: `docker compose stop` during processing, and run compose with 2 worker replicas and confirm there are no duplicates and no lost events.
+- Tooling: `docker-compose.replicas.yml` (2 worker replicas, no host port – they would clash on 7461), `docker-compose.static.yml` (the static model) and `scripts/load-test.cs` (`publish <count> <run.json>` sends comments with publisher confirms and collects the `comment.analyzed` events in a queue of its own; `verify <run.json>` waits for the workers and checks: every comment analyzed, at most one analysis and one outbox row each, none unpublished, an event for every comment, and no comment with events of several outbox rows – redelivered copies of one row are allowed, since publishing is at least once). The test needs a fast model (static or Jev) and one model version throughout.
+- Results (Windows, Docker Desktop, compose stack):
+
+  | scenario | comments | what happened during processing | result |
+  |---|---|---|---|
+  | static model, 2 replicas (concurrency 1 each) | 3000 | `docker stop` of one replica, restarted 5 s later | passed; 1499 / 1501 analyses per replica, 14 s to drain after publishing |
+  | static model, 2 replicas, queue filled first | 5000 | one replica stopped gracefully, the other killed (`docker kill`, 3817 still queued) 2 s later, both restarted | passed; 1 event published twice (the killed replica's batch was partly confirmed by the broker but not yet marked in the outbox) – an at-least-once copy with the same message id; how many depends on the timing (up to a batch of 100) |
+  | Jev through OpenRouter, 2 replicas × concurrency 4, queue filled first | 300 | `docker compose stop` of both replicas after 15 s (152 still queued) | passed; the stop took 1.2 s and both replicas logged "in-flight messages completed"; about 10 comments/s with 8 handlers |
+
+- Nothing was dead-lettered (the two DLQ messages are from earlier manual checks). No code change was needed: D2's shutdown and the outbox's `FOR UPDATE SKIP LOCKED` held under load, and no comment got a second analysis or outbox row. With one model version a second analysis is impossible anyway (the unique key); the runs did not measure how often the idempotency check skipped a redelivered comment.
+- After the H2 review: `verify` keeps the run's events (unacked, its queue is deleted only when the run passed), so a timed-out or failed check can be repeated; each run has its own event queue that expires after an hour; `publish` writes the run file even when interrupted. The first run's figures above came from the previous version of the script, with the same checks.
 
 **H3. Documentation**
 - README: architecture, configuration reference, running locally, sending a test comment, swapping models, and the production migration bundle.

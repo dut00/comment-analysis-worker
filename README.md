@@ -30,7 +30,7 @@ basal-serve --model "C:\Users\Kuba\.lmstudio\models\Remek\basal-2.0-mini-GGUF" -
 - The server listens on all interfaces (`0.0.0.0:1234`), so the worker in compose can reach it.
 - Check it with `curl http://localhost:1234/v1/models` (lists `basal-2.0-mini`) and `curl http://localhost:1234/health`.
 - Expect about 11 s per short comment (four questions), about 19 s for 2500 characters and about 52 s for 10 000 (the eager mode without `--mode gguf` was 7–20 times slower). The server handles one request at a time and finishes a request even after the client gave up, so Development and compose prefetch one message. Comments over `Consumer:MaxContentLength` (1000 characters; comments are expected to have at most 280) go to manual review without the model.
-- Without the model, set `Model__Provider: Static` in compose (or `Model:Provider` in Development settings).
+- Without the model, use the static model: `docker compose -f docker-compose.yml -f docker-compose.static.yml up --build -d` (or `Model:Provider` in Development settings).
 
 ### Switching to TypeSafe's Jev through OpenRouter
 
@@ -80,6 +80,24 @@ dotnet run scripts/quality-report.cs -- tests/data/polish-comments.json docs/qua
 # Side by side, at the current default policy
 dotnet run scripts/compare-models.cs -- tests/data/polish-comments.json docs/quality/comparison.md basal-2.0-mini=docs/quality/basal-2.0-mini-results.json jev-1.14=docs/quality/jev-1.14-results.json
 ```
+
+## Scaling and load test
+
+The worker is stateless, so it scales by running more replicas against the same queue and database: a comment is analyzed once (idempotency check plus the unique key on comment and model version), and each outbox row is claimed by one replica (`FOR UPDATE SKIP LOCKED`). Events are published at least once: if a replica is killed between the broker's confirm and the outbox update, another replica (or the restarted one) publishes the same event again with the same message id, so consumers deduplicate on it.
+
+The load test needs a fast model – the static one (`docker-compose.static.yml`) or Jev (`docker-compose.jev.yml`); the local Basal server takes about 11 s per comment. Do not change the model during a run.
+
+```bash
+# Two replicas of the static model (no host port: they would clash on 7461; health is in `docker compose ps`)
+docker compose -f docker-compose.yml -f docker-compose.static.yml -f docker-compose.replicas.yml up --build -d
+# Publish comments, stop or kill replicas meanwhile if you like, then check that nothing was lost or analyzed twice
+dotnet run scripts/load-test.cs -- publish 1000 load-test-run.json
+dotnet run scripts/load-test.cs -- verify load-test-run.json      # exit 0 passed, 2 failed, 3 timed out; rerun after 2 or 3
+# Back to one replica of the default model
+docker compose up --build -d
+```
+
+Results of the H2 runs (stopping and killing replicas under load, with the static model and with Jev) are in the implementation plan.
 
 ## Metrics
 
