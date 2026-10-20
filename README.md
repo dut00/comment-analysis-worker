@@ -2,7 +2,7 @@
 
 A .NET 10 worker that moderates newly created comments. It consumes `CommentCreated` from RabbitMQ, asks a decision model whether the comment may be published, and decides **Approve**, **Reject** or **ManualReview**. It stores the decision, the model's confidence and the exact model version in PostgreSQL and publishes `CommentAnalyzed` through a transactional outbox. It is stateless and runs in containers, as one replica or several.
 
-The decision model is queried through the TypeSafe-compatible `POST /v1/systemone` API: TypeSafe's Jev in the cloud (through OpenRouter) or Basal 2.0 mini on a local server. The design and the history of every decision are in [docs/implementation-plan.md](docs/implementation-plan.md); production hardening (phase H4) is still open.
+The decision model is queried through the TypeSafe-compatible `POST /v1/systemone` API: TypeSafe's Jev in the cloud (through OpenRouter) or Basal 2.0 mini on a local server. The design and the history of every decision are in [docs/implementation-plan.md](docs/implementation-plan.md).
 
 - [How it works](#how-it-works)
 - [Quick start](#quick-start)
@@ -326,14 +326,14 @@ Database__ConnectionString="$(cat /run/secrets/migrator-connection-string)" ./ef
 
 Without `--connection` or `Database__ConnectionString` the bundle falls back to the local compose database (`localhost:5433`), so always set one – with `SSL Mode=VerifyFull` like the worker's (the bundle does not enforce it, and it connects as the schema owner). It applies only the missing migrations (none on an up-to-date database) and takes a lock, so two runs cannot interfere. It can run with a user that may change the schema, while the worker's own user only needs to read, write and delete rows in its two tables. A migration's `Down` may lose data (e.g. dropping analyses made without the model), so roll back by deploying the previous version only after checking it.
 
-**RabbitMQ.** The worker declares its topology at every start (exchanges, queues, bindings – see [Messages](#messages)), even when it already exists, so its user needs the *configure* permission on `comments`, `comment-analysis.*` and the dead-letter queue, *write* on `comments` and on the default exchange (retries are republished straight to the input queue), and *read* on the input queue. Without configure the declaration fails, readiness stays unhealthy and nothing is consumed.
+**RabbitMQ.** The worker declares its topology at every start (exchanges, queues, bindings – see [Messages](#messages)), even when it already exists, so its user needs the *configure* permission on `comments`, `comment-analysis.*` and the dead-letter queue, *write* on `comments` and on the default exchange (retries are republished straight to the input queue), and *read* on the input queue. Without configure the declaration fails, readiness stays unhealthy and nothing is consumed. The worker also declares the topology again whenever it has to recreate its consumer, so a deleted input queue comes back with the worker's arguments within seconds (its messages are gone): to change the queue's arguments, stop all workers, delete it and start them with the new settings, or use a policy. A running worker that finds the queue recreated with other arguments stops consuming and readiness reports the refused configuration.
 
 **RabbitMQ policies.** The worker declares its queues with fixed arguments, and redeclaring with different ones fails (`PRECONDITION_FAILED`), so tune queues that already exist with a policy: it applies to an existing queue and to the messages in it, and the worker's declaration stays valid. Checked on RabbitMQ 4.3.6 (the delivery limit also by an integration test):
 
 | Key | Policy vs the worker's argument | Use |
 |---|---|---|
 | `delivery-limit` | the lower value wins: a policy can lower the limit (5), never raise it | lower it to stop a crash loop sooner; to raise it, change `RabbitMq:DeliveryLimit` and recreate the queue (drain it first) |
-| `max-length`, `max-length-bytes` | the worker sets none | cap the input queue; with the worker's `reject-publish` the broker nacks publishes once the queue is over the cap (one message over, as quorum queues allow), so the comment service must use publisher confirms and retry. The worker's own retries are nacked too: it requeues the original uncounted and processes it again (another model call after the retry delay) until the queue is below the cap, so a comment that always fails cannot reach the DLQ meanwhile (metric `comment_analysis.messages.requeued`, reason `retry_publish_failed`) |
+| `max-length`, `max-length-bytes` | the worker sets none | cap the input queue; with the worker's `reject-publish` the broker nacks publishes once the queue is over the cap (one message over, as quorum queues allow; messages delivered but not yet acked do not count), so the comment service must use publisher confirms and retry. The worker's own retry copies are nacked too: it returns the original to the queue uncounted after a back-off (1 s doubling to 30 s, shared by the handlers) and processes it again – another model call – until the queue is below the cap, so a comment that always fails cannot reach the DLQ meanwhile (metric `comment_analysis.messages.requeued`, reason `retry_publish_failed`) |
 | `overflow` | **the policy wins** | never set it: `drop-head` discards the oldest comments to the DLQ, and because at-least-once dead-lettering requires `reject-publish`, RabbitMQ falls back to at-most-once for every message dead-lettered from the queue (crashes, exhausted retries, malformed messages) |
 | `dead-letter-exchange` | the argument wins | – (the worker's DLX stays in use) |
 | `delivery-limit` on the DLQ | the DLQ has no argument, so RabbitMQ 4's implicit limit applies: a message is **dropped** on its 21st failed delivery (no dead-letter target) | set an explicit limit (or a dead-letter target) by policy before any tool replays the DLQ |
@@ -348,7 +348,7 @@ A policy matches by a pattern, and only one policy (the highest priority) applie
 
 **Images** are pinned: the Dockerfile's base images to a patch version and digest (refresh the digests at least monthly and on every .NET patch release – a tag is also re-pushed with OS security fixes; the Dockerfile says how), compose and the integration tests to patch versions of PostgreSQL and RabbitMQ.
 
-**Not done yet (phase H4):** a way to verify the topology without declaring it.
+**Not done:** a mode that only checks the topology instead of declaring it (for a broker whose topology is managed elsewhere and a worker user without *configure*); open in the plan.
 
 ## Development
 

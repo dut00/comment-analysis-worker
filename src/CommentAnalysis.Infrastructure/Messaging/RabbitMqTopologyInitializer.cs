@@ -42,12 +42,7 @@ public sealed partial class RabbitMqTopologyInitializer(
         {
             try
             {
-                var amqp = await connection.GetAsync(stoppingToken).ConfigureAwait(false);
-                var channel = await amqp.CreateChannelAsync(cancellationToken: stoppingToken).ConfigureAwait(false);
-                await using (channel.ConfigureAwait(false))
-                {
-                    await RabbitMqTopology.DeclareAsync(channel, settings, stoppingToken).ConfigureAwait(false);
-                }
+                await DeclareOnceAsync(stoppingToken).ConfigureAwait(false);
 
                 _hasConfigurationError = false;
                 LogTopologyDeclared(logger, settings.Exchange, settings.InputQueue, settings.DeadLetterQueue);
@@ -69,6 +64,43 @@ public sealed partial class RabbitMqTopologyInitializer(
 
             await Task.Delay(delay, timeProvider, stoppingToken).ConfigureAwait(false);
             delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, settings.MaxReconnectDelay.Ticks));
+        }
+    }
+
+    /// <summary>
+    /// Declares the topology once more, e.g. after the broker cancelled the consumer because the input queue was
+    /// deleted: the worker owns its topology and restores it as it would at startup. Idempotent while the topology
+    /// exists; failures are thrown to the caller, which retries.
+    /// </summary>
+    /// <remarks>
+    /// A refusal that retrying will not fix (e.g. an operator recreated the queue with other arguments, or the
+    /// <c>configure</c> permission was revoked) is flagged in <see cref="HasConfigurationError"/>, as at startup.
+    /// </remarks>
+    public async Task RedeclareAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await DeclareOnceAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (IsConfigurationError(exception))
+        {
+            _hasConfigurationError = true;
+            LogRedeclareRefused(logger, exception);
+            throw;
+        }
+
+        _hasConfigurationError = false;
+        LogTopologyRedeclared(logger, options.Value.InputQueue);
+    }
+
+    // A channel of its own: a refused declaration closes the channel it was made on.
+    private async Task DeclareOnceAsync(CancellationToken cancellationToken)
+    {
+        var amqp = await connection.GetAsync(cancellationToken).ConfigureAwait(false);
+        var channel = await amqp.CreateChannelAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        await using (channel.ConfigureAwait(false))
+        {
+            await RabbitMqTopology.DeclareAsync(channel, options.Value, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -98,4 +130,17 @@ public sealed partial class RabbitMqTopologyInitializer(
         Message = "RabbitMQ refused the worker's configuration (credentials, permissions or queue/exchange arguments) " +
                   "on attempt {Attempt}; this will not resolve without a change. Retrying in {RetryDelay}")]
     private static partial void LogConfigurationError(ILogger logger, Exception exception, int attempt, TimeSpan retryDelay);
+
+    [LoggerMessage(
+        EventId = 213,
+        Level = LogLevel.Information,
+        Message = "RabbitMQ topology declared again before recreating the consumer of {InputQueue}")]
+    private static partial void LogTopologyRedeclared(ILogger logger, string inputQueue);
+
+    [LoggerMessage(
+        EventId = 214,
+        Level = LogLevel.Error,
+        Message = "RabbitMQ refused the worker's configuration (credentials, permissions or queue/exchange arguments) " +
+                  "while declaring the topology again; the consumer stays stopped until this is changed")]
+    private static partial void LogRedeclareRefused(ILogger logger, Exception exception);
 }

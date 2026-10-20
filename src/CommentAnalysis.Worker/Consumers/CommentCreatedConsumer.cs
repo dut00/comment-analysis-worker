@@ -23,7 +23,8 @@ namespace CommentAnalysis.Worker.Consumers;
 /// Recovery: after a connection failure the client's automatic recovery restores the channel and the
 /// consumer. A channel closed by the broker (e.g. <c>consumer_timeout</c>) or a consumer cancelled by the
 /// broker (e.g. the queue was deleted) is not recovered by the client, so this service recreates them,
-/// retrying with back-off. <see cref="IsConsuming"/> feeds the readiness check.
+/// retrying with back-off, and declares the topology again first (a deleted queue comes back with the worker's
+/// arguments, as after a restart). <see cref="IsConsuming"/> feeds the readiness check.
 /// </para>
 /// <para>
 /// Shutdown: the consumer is cancelled first (no new deliveries), in-flight messages are allowed to finish
@@ -79,6 +80,10 @@ internal sealed partial class CommentCreatedConsumer(
     // answers again.
     private long _modelUnavailableDelayTicks = InitialRetryDelay.Ticks;
 
+    // Back-off while retry copies are refused (e.g. the input queue is at a max-length cap), shared the same way; reset
+    // by the next confirmed retry.
+    private long _retryPublishFailedDelayTicks = InitialRetryDelay.Ticks;
+
     private IChannel? _channel;
     private string? _consumerTag;
 
@@ -96,11 +101,18 @@ internal sealed partial class CommentCreatedConsumer(
         await topology.WaitUntilReadyAsync(stoppingToken).ConfigureAwait(false);
 
         var delay = InitialRetryDelay;
+        var recreating = false;
         while (!stoppingToken.IsCancellationRequested)
         {
             var lost = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             try
             {
+                if (recreating)
+                {
+                    // The loss may mean the input queue was deleted: restore the topology as a restart would.
+                    await topology.RedeclareAsync(stoppingToken).ConfigureAwait(false);
+                }
+
                 await StartConsumingAsync(lost, stoppingToken).ConfigureAwait(false);
                 delay = InitialRetryDelay;
 
@@ -118,6 +130,7 @@ internal sealed partial class CommentCreatedConsumer(
                 LogStartFailed(logger, exception, delay);
             }
 
+            recreating = true;
             await CloseChannelQuietlyAsync().ConfigureAwait(false);
             await Task.Delay(delay, timeProvider, stoppingToken).ConfigureAwait(false);
             delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, rabbitMqOptions.Value.MaxReconnectDelay.Ticks));
@@ -458,16 +471,7 @@ internal sealed partial class CommentCreatedConsumer(
     /// </remarks>
     private async Task RequeueWhileModelUnavailableAsync(IChannel channel, BasicDeliverEventArgs delivery, ModelUnavailableException exception)
     {
-        // Doubled atomically, so concurrent handlers do not lose a reset made by a success in between.
-        long delayTicks;
-        do
-        {
-            delayTicks = Interlocked.Read(ref _modelUnavailableDelayTicks);
-        }
-        while (Interlocked.CompareExchange(
-            ref _modelUnavailableDelayTicks, Math.Min(delayTicks * 2, ConsumerOptions.MaxRetryDelay.Ticks), delayTicks) != delayTicks);
-
-        var delay = GetModelUnavailableDelay(TimeSpan.FromTicks(delayTicks), exception.RetryAfter);
+        var delay = GetModelUnavailableDelay(TakeBackOff(ref _modelUnavailableDelayTicks), exception.RetryAfter);
         LogModelUnavailable(logger, exception, delay);
         metrics.Requeued(RequeueReason.ModelUnavailable);
 
@@ -483,6 +487,23 @@ internal sealed partial class CommentCreatedConsumer(
 
         await SettleAsync(() => channel.BasicNackAsync(delivery.DeliveryTag, multiple: false, requeue: true, CancellationToken.None))
             .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Returns the current shared back-off and doubles it (up to <see cref="ConsumerOptions.MaxRetryDelay"/>).
+    /// Doubled atomically, so concurrent handlers do not lose a reset made by a success in between.
+    /// </summary>
+    private static TimeSpan TakeBackOff(ref long delayTicks)
+    {
+        long current;
+        do
+        {
+            current = Interlocked.Read(ref delayTicks);
+        }
+        while (Interlocked.CompareExchange(
+            ref delayTicks, Math.Min(current * 2, ConsumerOptions.MaxRetryDelay.Ticks), current) != current);
+
+        return TimeSpan.FromTicks(current);
     }
 
     /// <summary>
@@ -543,16 +564,37 @@ internal sealed partial class CommentCreatedConsumer(
         {
             return;
         }
+        catch (Exception publishException) when (!channel.IsOpen)
+        {
+            // The channel was lost during the publish: the broker has already returned the original to the queue, so
+            // do not hold the handler's slot for a back-off the recreated consumer would have to wait for.
+            LogRetryPublishLostChannel(logger, publishException);
+            return;
+        }
         catch (Exception publishException)
         {
-            // Not confirmed (or returned as unroutable): keep the original instead, uncounted.
-            LogRetryPublishFailed(logger, publishException);
+            // Not confirmed (or returned as unroutable): keep the original instead, uncounted. It is processed again
+            // (another model call), so hold it for a shared back-off first: while the broker keeps refusing copies
+            // (e.g. the input queue at a max-length cap) the handlers slow down instead of spinning.
+            var backOff = TakeBackOff(ref _retryPublishFailedDelayTicks);
+            LogRetryPublishFailed(logger, publishException, backOff);
             metrics.Requeued(RequeueReason.RetryPublishFailed);
+            try
+            {
+                await Task.Delay(backOff, timeProvider, _stopRequested.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Shutdown: the message returns to the queue when the channel closes.
+                return;
+            }
+
             await SettleAsync(() => channel.BasicNackAsync(delivery.DeliveryTag, multiple: false, requeue: true, CancellationToken.None))
                 .ConfigureAwait(false);
             return;
         }
 
+        Interlocked.Exchange(ref _retryPublishFailedDelayTicks, InitialRetryDelay.Ticks);
         metrics.Retried();
         await SettleAsync(() => channel.BasicAckAsync(delivery.DeliveryTag, multiple: false, CancellationToken.None))
             .ConfigureAwait(false);
@@ -667,8 +709,11 @@ internal sealed partial class CommentCreatedConsumer(
     [LoggerMessage(EventId = 316, Level = LogLevel.Error, Message = "Processing the comment failed after {Retries} retries; rejected to the dead-letter queue")]
     private static partial void LogRetriesExhausted(ILogger logger, Exception exception, int retries);
 
-    [LoggerMessage(EventId = 317, Level = LogLevel.Error, Message = "Republishing the message for a retry failed; the original is requeued")]
-    private static partial void LogRetryPublishFailed(ILogger logger, Exception exception);
+    [LoggerMessage(EventId = 317, Level = LogLevel.Error, Message = "Republishing the message for a retry failed; returning the original to the queue in {Delay}")]
+    private static partial void LogRetryPublishFailed(ILogger logger, Exception exception, TimeSpan delay);
+
+    [LoggerMessage(EventId = 319, Level = LogLevel.Warning, Message = "Republishing the message for a retry failed because the channel is closed; RabbitMQ will redeliver it")]
+    private static partial void LogRetryPublishLostChannel(ILogger logger, Exception exception);
 
     [LoggerMessage(EventId = 305, Level = LogLevel.Warning, Message = "Processing was aborted by the shutdown timeout; the message will be redelivered")]
     private static partial void LogProcessingAborted(ILogger logger);

@@ -11,8 +11,8 @@ using CommentAnalysis.Worker.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Diagnostics.Metrics.Testing;
-using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
 
 namespace CommentAnalysis.IntegrationTests.Messaging;
@@ -231,6 +231,38 @@ public class CommentCreatedConsumerTests(PostgresFixture postgres, RabbitMqFixtu
     }
 
     [Fact]
+    public async Task RefusedRetryCopies_BackOff_InsteadOfReprocessingAtOnce()
+    {
+        var topology = RabbitMqFixture.CreateTopologySettings();
+        var model = new FailingDecisionModel(failures: int.MaxValue);
+        await using var worker = await StartWorkerAsync(
+            topology, model, ("Consumer:RetryDelay", "00:00:01"), ("Consumer:Prefetch", "1"), ("Consumer:Concurrency", "1"));
+        using var requeued = CollectMetric<long>(worker, "comment_analysis.messages.requeued");
+
+        // An operator capped the input queue: with the worker's reject-publish overflow the broker nacks a publish
+        // while a message is ready. (Unacked messages do not count, so a second comment keeps the queue full.)
+        await rabbitMq.SetQueuePolicyAsync(topology.InputQueue, """{"max-length":0}""");
+        await PublishAsync(topology, MessageSerializer.Serialize(CreateComment()));
+
+        // The second comment must be ready before the first one's retry copy (1 s after its model call): publish it
+        // on a channel opened beforehand, so the window does not include connecting.
+        await using var connection = await rabbitMq.ConnectAsync();
+        await using var publisher = await connection.CreateChannelAsync(
+            new CreateChannelOptions(publisherConfirmationsEnabled: true, publisherConfirmationTrackingEnabled: true));
+        Assert.True(await WaitUntilAsync(() => Task.FromResult(model.Calls == 1)), "The first comment was not processed.");
+        await publisher.BasicPublishAsync(
+            topology.Exchange, "comment.created", mandatory: true, new BasicProperties { Persistent = true }, MessageSerializer.Serialize(CreateComment()));
+
+        // Each retry copy is refused while the other comment waits. Without the back-off (1 s, 2 s, 4 s) the two
+        // comments would alternate once per retry delay: about 7 model calls in 6.5 s instead of 3.
+        await Task.Delay(TimeSpan.FromSeconds(6.5));
+        Assert.InRange(model.Calls, 2, 4);
+        Assert.InRange(requeued.GetMeasurementSnapshot().EvaluateAsCounter(), 2, 4);
+        Assert.All(requeued.GetMeasurementSnapshot(), measurement => Assert.Equal("retry_publish_failed", measurement.Tags["comment_analysis.requeue_reason"]));
+        Assert.Equal(0u, (await rabbitMq.GetQueueCountsAsync(topology.DeadLetterQueue)).Ready);
+    }
+
+    [Fact]
     public async Task Metrics_CountDecisionsRetriesDuplicatesAndDeadLetters()
     {
         var topology = RabbitMqFixture.CreateTopologySettings();
@@ -291,7 +323,7 @@ public class CommentCreatedConsumerTests(PostgresFixture postgres, RabbitMqFixtu
     }
 
     [Fact]
-    public async Task Consumer_IsRecreated_AfterBrokerCancelsIt()
+    public async Task Consumer_IsRecreated_WithItsQueue_AfterBrokerCancelsIt()
     {
         var topology = RabbitMqFixture.CreateTopologySettings();
         await using var worker = await StartWorkerAsync(topology);
@@ -305,17 +337,11 @@ public class CommentCreatedConsumerTests(PostgresFixture postgres, RabbitMqFixtu
             await channel.QueueDeleteAsync(topology.InputQueue);
         }
 
-        Assert.True(await WaitUntilAsync(() => Task.FromResult(!consumer.IsConsuming)), "The lost consumer was not detected.");
+        // The worker declares its topology again before recreating the consumer, as a restart would.
+        Assert.True(await WaitUntilAsync(() => Task.FromResult(consumer.ConsumerStarts == 2)), "The consumer was not recreated.");
+        Assert.True(consumer.IsConsuming);
 
-        // Recreate the topology as an operator (or another worker instance) would.
-        await using (var channel = await connection.CreateChannelAsync())
-        {
-            var options = worker.Services.GetRequiredService<IOptions<RabbitMqOptions>>().Value;
-            await RabbitMqTopology.DeclareAsync(channel, options, CancellationToken.None);
-        }
-
-        Assert.True(await WaitUntilAsync(() => Task.FromResult(consumer.IsConsuming)), "The consumer was not recreated.");
-        Assert.Equal(2, consumer.ConsumerStarts);
+        // Published through the exchange: the queue came back with its binding.
         var comment = CreateComment();
         await PublishAsync(topology, MessageSerializer.Serialize(comment));
         await WaitForAnalysisAsync(comment.CommentId);
@@ -326,6 +352,31 @@ public class CommentCreatedConsumerTests(PostgresFixture postgres, RabbitMqFixtu
         await PublishAsync(topology, MessageSerializer.Serialize(afterRecovery));
         await WaitForAnalysisAsync(afterRecovery.CommentId);
         await AssertSingleConsumerAsync(topology);
+    }
+
+    [Fact]
+    public async Task QueueRecreatedWithOtherArguments_IsReportedAsConfigurationError()
+    {
+        var topology = RabbitMqFixture.CreateTopologySettings();
+        await using var worker = await StartWorkerAsync(topology);
+        var consumer = worker.Services.GetRequiredService<CommentCreatedConsumer>();
+        var initializer = worker.Services.GetRequiredService<RabbitMqTopologyInitializer>();
+        Assert.True(await WaitUntilAsync(() => Task.FromResult(consumer.IsConsuming)), "The consumer never started.");
+
+        // An operator replaces the input queue with a classic one while the worker runs.
+        await using var connection = await rabbitMq.ConnectAsync();
+        await using (var channel = await connection.CreateChannelAsync())
+        {
+            await channel.QueueDeleteAsync(topology.InputQueue);
+            await channel.QueueDeclareAsync(topology.InputQueue, durable: true, exclusive: false, autoDelete: false);
+        }
+
+        // The redeclaration before recreating the consumer is refused (PRECONDITION_FAILED): readiness says so.
+        Assert.True(await WaitUntilAsync(() => Task.FromResult(initializer.HasConfigurationError)), "The refusal was not reported.");
+        Assert.False(consumer.IsConsuming);
+        var health = await worker.Services.GetRequiredService<HealthCheckService>().CheckHealthAsync();
+        Assert.Contains(health.Entries.Values, entry =>
+            entry.Status == HealthStatus.Unhealthy && entry.Description?.Contains("refused the configuration", StringComparison.Ordinal) == true);
     }
 
     [Fact]
