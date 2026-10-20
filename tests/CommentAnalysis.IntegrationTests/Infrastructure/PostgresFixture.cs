@@ -11,7 +11,8 @@ namespace CommentAnalysis.IntegrationTests.Infrastructure;
 /// </summary>
 public sealed class PostgresFixture : IAsyncLifetime
 {
-    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:17").Build();
+    // The same version as docker-compose.yml; update both together.
+    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:17.11").Build();
 
     public string ConnectionString => _container.GetConnectionString();
 

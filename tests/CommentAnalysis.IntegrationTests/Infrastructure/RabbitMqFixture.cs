@@ -10,7 +10,8 @@ namespace CommentAnalysis.IntegrationTests.Infrastructure;
 /// </summary>
 public sealed class RabbitMqFixture : IAsyncLifetime
 {
-    private readonly RabbitMqContainer _container = new RabbitMqBuilder("rabbitmq:4").Build();
+    // The same broker version as docker-compose.yml; update both together.
+    private readonly RabbitMqContainer _container = new RabbitMqBuilder("rabbitmq:4.3.6").Build();
 
     public Uri Uri => new(_container.GetConnectionString());
 

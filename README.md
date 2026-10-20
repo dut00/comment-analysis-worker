@@ -328,7 +328,9 @@ Without `--connection` or `Database__ConnectionString` the bundle falls back to 
 
 **RabbitMQ.** The worker declares its topology at every start (exchanges, queues, bindings – see [Messages](#messages)), even when it already exists, so its user needs the *configure* permission on `comments`, `comment-analysis.*` and the dead-letter queue, *write* on `comments` and on the default exchange (retries are republished straight to the input queue), and *read* on the input queue. Without configure the declaration fails, readiness stays unhealthy and nothing is consumed. Tune the queues with policies rather than arguments (to be documented in H4).
 
-**Not done yet (phase H4):** pinning image versions, a way to verify the topology without declaring it, and documenting the RabbitMQ policies.
+**Images** are pinned: the Dockerfile's base images to a patch version and digest (refresh the digests at least monthly and on every .NET patch release – a tag is also re-pushed with OS security fixes; the Dockerfile says how), compose and the integration tests to patch versions of PostgreSQL and RabbitMQ.
+
+**Not done yet (phase H4):** a way to verify the topology without declaring it, and documenting the RabbitMQ policies.
 
 ## Development
 

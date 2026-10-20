@@ -1,9 +1,10 @@
 # Local development stack. Credentials are development defaults; ports are bound to localhost only.
+# Images are pinned to patch versions, the same as in the integration tests (PostgresFixture, RabbitMqFixture).
 name: comment-analysis
 
 services:
   postgres:
-    image: postgres:17
+    image: postgres:17.11
     environment:
       POSTGRES_DB: comment_analysis
       POSTGRES_USER: postgres
@@ -21,7 +22,7 @@ services:
     restart: unless-stopped
 
   rabbitmq:
-    image: rabbitmq:4-management
+    image: rabbitmq:4.3.6-management
     ports:
       - "127.0.0.1:5672:5672"
       # Management UI: http://localhost:15672 (guest / guest)
