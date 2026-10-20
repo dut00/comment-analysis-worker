@@ -7,7 +7,8 @@ namespace CommentAnalysis.IntegrationTests.Infrastructure;
 
 /// <summary>
 /// Hosts the worker in-process with settings that need no external services: a static model
-/// and PostgreSQL and RabbitMQ addresses on a closed port (migrations on startup are disabled).
+/// and PostgreSQL and RabbitMQ addresses on a closed port (migrations on startup are disabled). Metrics are not
+/// exported, even if the machine sets an OTLP endpoint in its environment.
 /// Individual settings can be overridden per test; an override with a null value removes the default.
 /// </summary>
 internal sealed class WorkerFactory : WebApplicationFactory<Program>
@@ -19,6 +20,8 @@ internal sealed class WorkerFactory : WebApplicationFactory<Program>
         ["Database:ConnectionString"] = "Host=127.0.0.1;Port=1;Database=unused;Username=unused;Password=unused;Timeout=2",
         ["Database:MigrateOnStartup"] = "false",
         ["RabbitMq:Uri"] = "amqp://guest:guest@127.0.0.1:1/",
+        ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "",
+        ["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"] = "",
     };
 
     private readonly Dictionary<string, string> _settings;

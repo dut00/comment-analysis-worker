@@ -270,7 +270,7 @@ The separate Jev client planned here is not needed: `SystemOneDecisionModel` alr
 
 ### Phase H – Production readiness
 
-**H1. Observability** – split in two
+**H1. Observability** `[x]` – split in two
 
 **H1a. Metrics** `[x]`
 - `WorkerMetrics` (meter `CommentAnalysis.Worker`, created through `IMeterFactory`), with tags limited to fixed value sets (never comment data):
@@ -282,8 +282,12 @@ The separate Jev client planned here is not needed: `SystemOneDecisionModel` alr
 - After the H1a review, deferred: a dead-letter, retry or analysis is counted even if settling the delivery then fails on a lost channel (the redelivery is counted again); exact counts would need `SettleAsync` to report the outcome. Rare, and only skews counters.
 - Tests: `WorkerMetricsTests` (tags, no duration for a comment not evaluated, the gauge's states) and end-to-end checks in the consumer and outbox tests (`MetricCollector` on the worker's `IMeterFactory`), including the lag while RabbitMQ is unreachable.
 
-**H1b. Export** `[ ]`
-- Optional OpenTelemetry export (OTLP) behind config, with the runtime, HTTP client and ASP.NET Core meters; a local viewer in compose for the manual check.
+**H1b. Export** `[x]`
+- OpenTelemetry (`OpenTelemetry.Extensions.Hosting`, OTLP exporter 1.20.0) exports metrics only when `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` is set (environment or any configuration source); the other standard `OTEL_*` settings (protocol, headers, export interval) apply as usual. An endpoint that is not an absolute http(s) URI fails the start; a wrong but valid one only shows in the SDK's self-diagnostics. Service name `comment-analysis-worker` unless `OTEL_SERVICE_NAME` sets another. Meters: `CommentAnalysis.Worker`, `System.Runtime`, `System.Net.Http` (the model), `Microsoft.AspNetCore.Hosting` (health checks) and `Npgsql`. Metrics only: logs stay on the console (JSON), traces are not needed yet.
+- No scrape endpoint (`/metrics`): the Prometheus exporter for ASP.NET Core is still a prerelease, and push over OTLP works with any collector. The worker's HTTP port therefore still serves health checks only.
+- Compose: an optional Aspire Dashboard (`--profile observability`, UI on `http://localhost:18888`, OTLP gRPC on 18889 inside the network, anonymous because it is bound to localhost); the worker's `OTEL_EXPORTER_OTLP_ENDPOINT` comes from the shell's `WORKER_OTLP_ENDPOINT` (empty by default; not the shell's own OTLP endpoint, which may point at `localhost` of another setup) and it exports every 10 s.
+- After the H1b review: `WorkerFactory` blanks both endpoint settings, so a machine with an ambient OTLP endpoint neither breaks the tests nor receives their metrics. Not done: honouring `OTEL_SDK_DISABLED` explicitly, the EF Core meter, and a production rule that a remote collector must use https (H4).
+- Manual check (static model): four comments (three approved, one too long) and a malformed message; the dashboard showed `comment_analysis.comments.analyzed` = 4 with `Approve`/`ManualReview` and `static@1.0.0`, the other worker instruments, and the Npgsql, HTTP and ASP.NET Core meters.
 
 **H2. Graceful shutdown and scaling**
 - Shutdown behaviour itself is implemented in D2; here verify it under load: `docker compose stop` during processing, and run compose with 2 worker replicas and confirm there are no duplicates and no lost events.

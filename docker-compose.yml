@@ -53,6 +53,11 @@ services:
       Database__ConnectionString: Host=postgres;Port=5432;Database=comment_analysis;Username=postgres;Password=postgres
       Database__MigrateOnStartup: "true"
       RabbitMq__Uri: amqp://guest:guest@rabbitmq:5672/
+      # Metrics are exported only when an OTLP (gRPC) endpoint is set, e.g. the dashboard below:
+      # WORKER_OTLP_ENDPOINT=http://aspire-dashboard:18889 docker compose --profile observability up -d
+      # (not OTEL_EXPORTER_OTLP_ENDPOINT itself, which a shell may set for other applications).
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${WORKER_OTLP_ENDPOINT:-}
+      OTEL_METRIC_EXPORT_INTERVAL: "10000"
     ports:
       # Uncommon port on purpose: 8080, 5000 and similar are usually taken by the main applications.
       - "127.0.0.1:7461:7461"
@@ -68,6 +73,17 @@ services:
     # + consumer channel close, abort and dispose (3 x 2 s)
     # + consumer and publisher RabbitMQ connections, close and abort each (2 x 2 x 3 s) = 38 s.
     stop_grace_period: 45s
+    restart: unless-stopped
+
+  # Optional metrics viewer (OTLP gRPC on 18889): http://localhost:18888. Started only with --profile observability.
+  aspire-dashboard:
+    image: mcr.microsoft.com/dotnet/aspire-dashboard:9.5.2
+    profiles: ["observability"]
+    environment:
+      # Local only (bound to localhost): no login token.
+      DOTNET_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS: "true"
+    ports:
+      - "127.0.0.1:18888:18888"
     restart: unless-stopped
 
 volumes:

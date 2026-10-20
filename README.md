@@ -49,3 +49,15 @@ Model__SystemOne__ApiKey: ${TYPESAFE_API_KEY}   # from the environment or a secr
 - A rate limit (429) or an overload (529) makes the comments wait without using up their retries; the worker honours `Retry-After` up to 30 s. An overload also makes readiness unhealthy for a minute; a rate limit does not.
 - Each comment costs four questions' worth of input tokens. With the cloud, `Consumer:Prefetch` and `Consumer:Concurrency` can go back up (the local server's one-at-a-time limit does not apply), within the rate limit.
 - Changing the model (e.g. to `jev-1.14.0`) changes the stored model version, so later analyses can be told apart.
+
+## Metrics
+
+The worker records metrics with `System.Diagnostics.Metrics` (meter `CommentAnalysis.Worker`: decisions, review reasons, model duration, retries, requeues, dead-letters, published events and the outbox lag) and exports them over OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`) is set; without it nothing is exported. The other standard settings apply (`OTEL_EXPORTER_OTLP_PROTOCOL` – gRPC by default, `OTEL_EXPORTER_OTLP_HEADERS` for a collector's key, from a secret store – `OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_SERVICE_NAME`, default `comment-analysis-worker`). An endpoint that is not an absolute http(s) URI stops the start, but a reachable-looking wrong one does not: export errors are not in the worker's logs (only in the OpenTelemetry SDK's self-diagnostics).
+
+To see the metrics locally in the Aspire Dashboard (compose passes `WORKER_OTLP_ENDPOINT` on, so a shell's own `OTEL_EXPORTER_OTLP_ENDPOINT` does not leak into the container):
+
+```bash
+WORKER_OTLP_ENDPOINT=http://aspire-dashboard:18889 docker compose --profile observability up -d
+```
+
+Then open http://localhost:18888 → Metrics → `comment-analysis-worker`. Alert on `comment_analysis.outbox.oldest_pending_age` with max across replicas, and treat a missing value as a problem too (the worker reports none while it cannot read the outbox).

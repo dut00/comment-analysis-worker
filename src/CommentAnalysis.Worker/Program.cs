@@ -21,6 +21,7 @@ builder.Services.Configure<HostOptions>(builder.Configuration.GetSection("Host")
 
 builder.Services.AddCommentAnalysis(builder.Configuration);
 builder.Services.AddSingleton<WorkerMetrics>();
+builder.Services.AddCommentAnalysisTelemetry(builder.Configuration);
 builder.Services.AddCommentAnalysisPersistence(builder.Configuration);
 builder.Services.AddCommentAnalysisMessaging(builder.Configuration);
 

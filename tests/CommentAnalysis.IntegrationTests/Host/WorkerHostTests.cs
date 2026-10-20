@@ -4,8 +4,10 @@ using CommentAnalysis.Core.Decisions;
 using CommentAnalysis.Core.Models;
 using CommentAnalysis.Infrastructure.Models.SystemOne;
 using CommentAnalysis.IntegrationTests.Infrastructure;
+using CommentAnalysis.Worker.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using OpenTelemetry.Metrics;
 
 namespace CommentAnalysis.IntegrationTests.Host;
 
@@ -64,6 +66,43 @@ public class WorkerHostTests
         Assert.Contains("Model:SystemOne:BaseUrl", exception.Message, StringComparison.Ordinal);
         Assert.Contains("Model:SystemOne:Model is required", exception.Message, StringComparison.Ordinal);
         Assert.Contains("Model:SystemOne:Version is required", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task Telemetry_IsNotExported_WithoutAnOtlpEndpoint(string? endpoint)
+    {
+        // Compose passes an empty value when no endpoint is set.
+        await using var factory = new WorkerFactory((TelemetryExtensions.OtlpEndpointSetting, endpoint));
+
+        Assert.Null(factory.Services.GetService<MeterProvider>());
+    }
+
+    [Theory]
+    [InlineData(TelemetryExtensions.OtlpEndpointSetting)]
+    [InlineData(TelemetryExtensions.OtlpMetricsEndpointSetting)]
+    public async Task Telemetry_IsExported_WhenAnOtlpEndpointIsConfigured(string setting)
+    {
+        // Closed port: nothing receives the test's metrics.
+        await using var factory = new WorkerFactory((setting, "http://127.0.0.1:1"));
+
+        Assert.NotNull(factory.Services.GetService<MeterProvider>());
+    }
+
+    [Theory]
+    [InlineData(TelemetryExtensions.OtlpEndpointSetting, "localhost:4317")]
+    [InlineData(TelemetryExtensions.OtlpEndpointSetting, "ftp://collector:4317")]
+    [InlineData(TelemetryExtensions.OtlpEndpointSetting, "/collector")]
+    [InlineData(TelemetryExtensions.OtlpMetricsEndpointSetting, "collector")]
+    public async Task Startup_Fails_WhenTheOtlpEndpointIsInvalid(string setting, string endpoint)
+    {
+        await using var factory = new WorkerFactory((setting, endpoint));
+
+        var exception = Assert.ThrowsAny<Exception>(() => factory.CreateClient());
+
+        Assert.Contains($"{setting} must be an absolute http(s) URI", exception.ToString(), StringComparison.Ordinal);
     }
 
     [Fact]
