@@ -20,4 +20,10 @@ public sealed class ModelUnavailableException : Exception
         : base(message, innerException)
     {
     }
+
+    /// <summary>
+    /// How long the model's server asked to wait before the next request (<c>Retry-After</c>, e.g. when rate limited),
+    /// or null if it did not say.
+    /// </summary>
+    public TimeSpan? RetryAfter { get; init; }
 }

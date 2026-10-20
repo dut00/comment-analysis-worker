@@ -224,6 +224,20 @@ public class CommentCreatedConsumerTests(PostgresFixture postgres, RabbitMqFixtu
         await AssertQueuesAsync(topology, input: 0, deadLetter: 0);
     }
 
+    [Theory]
+    [InlineData(2, null, 2)]
+    [InlineData(2, 1, 2)]
+    [InlineData(2, 10, 10)]
+    [InlineData(2, 600, 30)]
+    [InlineData(30, 5, 30)]
+    public void ModelUnavailableDelay_HonoursRetryAfter_UpToTheMaximum(int backOff, int? retryAfter, int expected)
+    {
+        var delay = CommentCreatedConsumer.GetModelUnavailableDelay(
+            TimeSpan.FromSeconds(backOff), retryAfter is { } seconds ? TimeSpan.FromSeconds(seconds) : null);
+
+        Assert.Equal(TimeSpan.FromSeconds(expected), delay);
+    }
+
     [Fact]
     public async Task RetryCopy_IsNotRoutedToQueuesNamedInTheCcHeader()
     {

@@ -31,3 +31,21 @@ basal-serve --model "C:\Users\Kuba\.lmstudio\models\Remek\basal-2.0-mini-GGUF" -
 - Check it with `curl http://localhost:1234/v1/models` (lists `basal-2.0-mini`) and `curl http://localhost:1234/health`.
 - Expect about 11 s per short comment (four questions), about 19 s for 2500 characters and about 52 s for 10 000 (the eager mode without `--mode gguf` was 7–20 times slower). The server handles one request at a time and finishes a request even after the client gave up, so Development and compose prefetch one message. Comments over `Consumer:MaxContentLength` (1000 characters; comments are expected to have at most 280) go to manual review without the model.
 - Without the model, set `Model__Provider: Static` in compose (or `Model:Provider` in Development settings).
+
+### TypeSafe's cloud (Jev)
+
+The same client can query TypeSafe's cloud model Jev. This has not been checked against the live service yet (no API key; see phase G2 in the plan). Configure:
+
+```yaml
+Model__Provider: SystemOne
+Model__SystemOne__BaseUrl: https://api.typesafe.ai/v1/
+Model__SystemOne__Model: jev-1.13.0   # a version, not an alias: responses name the version, so jev-latest would never match
+Model__SystemOne__Version: "1.13.0"   # mirrors the model's version; part of the stored model version
+Model__SystemOne__Timeout: "00:00:30"
+Model__SystemOne__ApiKey: ${TYPESAFE_API_KEY}   # from the environment or a secret store; never commit it
+```
+
+- The key is sent as `Authorization: Bearer`. A wrong key (401) makes the comments wait and readiness unhealthy. No key at all is answered with 403, which the worker treats as unavailable only if the model list fails too (expected, not verified).
+- A rate limit (429) or an overload (529) makes the comments wait without using up their retries; the worker honours `Retry-After` up to 30 s. An overload also makes readiness unhealthy for a minute; a rate limit does not.
+- Each comment costs four questions' worth of input tokens. With the cloud, `Consumer:Prefetch` and `Consumer:Concurrency` can go back up (the local server's one-at-a-time limit does not apply), within the rate limit.
+- Changing the model (e.g. to `jev-1.14.0`) changes the stored model version, so later analyses can be told apart.

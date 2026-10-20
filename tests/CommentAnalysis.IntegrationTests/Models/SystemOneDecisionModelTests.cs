@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json.Nodes;
 using CommentAnalysis.Core.Models;
@@ -216,7 +217,6 @@ public class SystemOneDecisionModelTests
     [InlineData(HttpStatusCode.Forbidden)]
     [InlineData(HttpStatusCode.NotFound)]
     [InlineData(HttpStatusCode.RequestTimeout)]
-    [InlineData(HttpStatusCode.TooManyRequests)]
     [InlineData(HttpStatusCode.InternalServerError)]
     [InlineData(HttpStatusCode.NotImplemented)]
     [InlineData(HttpStatusCode.ServiceUnavailable)]
@@ -227,6 +227,93 @@ public class SystemOneDecisionModelTests
         var exception = await Assert.ThrowsAsync<ModelUnavailableException>(() => model.EvaluateAsync(Comment, CancellationToken.None));
 
         Assert.Equal(status, Assert.IsType<HttpRequestException>(exception.InnerException).StatusCode);
+    }
+
+    [Theory]
+    [InlineData(429)]
+    [InlineData(529)]
+    public async Task RateLimitOrOverload_MeansTheModelIsUnavailable_WhileTheServerListsTheModel(int status)
+    {
+        // TypeSafe's rate limit (429) and overload (529) concern the key or the service, never the comment.
+        var handler = new StubHandler("""{"detail":{"error_type":"rate_limit_error"}}""", (HttpStatusCode)status)
+        {
+            ModelsResponse = BasalModels,
+            RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromSeconds(7)),
+        };
+
+        var exception = await Assert.ThrowsAsync<ModelUnavailableException>(() => CreateModel(handler).EvaluateAsync(Comment, CancellationToken.None));
+
+        Assert.Equal(TimeSpan.FromSeconds(7), exception.RetryAfter);
+        Assert.Equal((HttpStatusCode)status, Assert.IsType<HttpRequestException>(exception.InnerException).StatusCode);
+        Assert.Single(handler.Requests);
+    }
+
+    [Fact]
+    public async Task RateLimit_ReadsRetryAfterAsADate()
+    {
+        var time = new FakeTimeProvider(new DateTimeOffset(2026, 10, 20, 12, 0, 0, TimeSpan.Zero));
+        var handler = new StubHandler("{}", HttpStatusCode.TooManyRequests)
+        {
+            RetryAfter = new RetryConditionHeaderValue(time.GetUtcNow().AddSeconds(12)),
+        };
+
+        var exception = await Assert.ThrowsAsync<ModelUnavailableException>(
+            () => CreateModel(handler, timeProvider: time).EvaluateAsync(Comment, CancellationToken.None));
+
+        Assert.Equal(TimeSpan.FromSeconds(12), exception.RetryAfter);
+    }
+
+    [Fact]
+    public async Task RateLimit_RetryAfterInThePast_IsZero()
+    {
+        var time = new FakeTimeProvider(new DateTimeOffset(2026, 10, 20, 12, 0, 0, TimeSpan.Zero));
+        var handler = new StubHandler("{}", HttpStatusCode.TooManyRequests)
+        {
+            RetryAfter = new RetryConditionHeaderValue(time.GetUtcNow().AddSeconds(-5)),
+        };
+
+        var exception = await Assert.ThrowsAsync<ModelUnavailableException>(
+            () => CreateModel(handler, timeProvider: time).EvaluateAsync(Comment, CancellationToken.None));
+
+        Assert.Equal(TimeSpan.Zero, exception.RetryAfter);
+    }
+
+    [Fact]
+    public async Task RejectedApiKey_MeansTheModelIsUnavailable_EvenIfTheModelListIsPublic()
+    {
+        var handler = new StubHandler("""{"detail":{"error_type":"authentication_error"}}""", HttpStatusCode.Unauthorized) { ModelsResponse = BasalModels };
+
+        var exception = await Assert.ThrowsAsync<ModelUnavailableException>(() => CreateModel(handler).EvaluateAsync(Comment, CancellationToken.None));
+
+        Assert.Equal(HttpStatusCode.Unauthorized, Assert.IsType<HttpRequestException>(exception.InnerException).StatusCode);
+    }
+
+    [Fact]
+    public async Task Health_StaysHealthy_AfterARateLimit()
+    {
+        // Throttling is expected under load; it must not take every replica out of readiness.
+        var model = CreateModel(new StubHandler("{}", HttpStatusCode.TooManyRequests) { ModelsResponse = BasalModels });
+        await Assert.ThrowsAsync<ModelUnavailableException>(() => model.EvaluateAsync(Comment, CancellationToken.None));
+
+        Assert.Equal(HealthStatus.Healthy, (await model.CheckHealthAsync(CancellationToken.None)).Status);
+    }
+
+    [Fact]
+    public async Task Health_IsUnhealthy_AfterAnOverload()
+    {
+        var model = CreateModel(new StubHandler("{}", (HttpStatusCode)529) { ModelsResponse = BasalModels });
+        await Assert.ThrowsAsync<ModelUnavailableException>(() => model.EvaluateAsync(Comment, CancellationToken.None));
+
+        Assert.Equal(HealthStatus.Unhealthy, (await model.CheckHealthAsync(CancellationToken.None)).Status);
+    }
+
+    [Fact]
+    public async Task RateLimit_WithoutRetryAfter_LeavesTheDelayToTheConsumer()
+    {
+        var exception = await Assert.ThrowsAsync<ModelUnavailableException>(
+            () => CreateModel(new StubHandler("{}", HttpStatusCode.TooManyRequests)).EvaluateAsync(Comment, CancellationToken.None));
+
+        Assert.Null(exception.RetryAfter);
     }
 
     [Fact]
@@ -242,6 +329,7 @@ public class SystemOneDecisionModelTests
     }
 
     [Theory]
+    [InlineData(HttpStatusCode.Forbidden)]
     [InlineData(HttpStatusCode.InternalServerError)]
     [InlineData(HttpStatusCode.ServiceUnavailable)]
     public async Task ErrorStatus_WhileTheServerListsTheModel_IsAFailureOfTheComment(HttpStatusCode status)
@@ -490,6 +578,9 @@ public class SystemOneDecisionModelTests
 
         public string Response { get; set; } = string.Empty;
 
+        /// <summary>The <c>Retry-After</c> header of the response (not of the model list).</summary>
+        public RetryConditionHeaderValue? RetryAfter { get; init; }
+
         /// <summary>The model list, answered with 200 regardless of the other settings.</summary>
         public string? ModelsResponse { get; init; }
 
@@ -513,7 +604,9 @@ public class SystemOneDecisionModelTests
                 throw _exception;
             }
 
-            return new HttpResponseMessage(_status) { Content = new StringContent(Response, Encoding.UTF8, "application/json") };
+            var response = new HttpResponseMessage(_status) { Content = new StringContent(Response, Encoding.UTF8, "application/json") };
+            response.Headers.RetryAfter = RetryAfter;
+            return response;
         }
     }
 

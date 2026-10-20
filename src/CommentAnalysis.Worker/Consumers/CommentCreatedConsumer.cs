@@ -435,7 +435,8 @@ internal sealed partial class CommentCreatedConsumer(
 
     /// <summary>
     /// Returns a message to the queue, uncounted, after a back-off (1 s doubling to
-    /// <see cref="ConsumerOptions.MaxRetryDelay"/>). The comment is not at fault, so it must not use up its retries or
+    /// <see cref="ConsumerOptions.MaxRetryDelay"/>), or longer if the model's server asked for it (see
+    /// <see cref="GetModelUnavailableDelay"/>). The comment is not at fault, so it must not use up its retries or
     /// reach the DLQ: while the model is down the worker effectively pauses, and readiness reports the model.
     /// </summary>
     /// <remarks>
@@ -453,7 +454,7 @@ internal sealed partial class CommentCreatedConsumer(
         while (Interlocked.CompareExchange(
             ref _modelUnavailableDelayTicks, Math.Min(delayTicks * 2, ConsumerOptions.MaxRetryDelay.Ticks), delayTicks) != delayTicks);
 
-        var delay = TimeSpan.FromTicks(delayTicks);
+        var delay = GetModelUnavailableDelay(TimeSpan.FromTicks(delayTicks), exception.RetryAfter);
         LogModelUnavailable(logger, exception, delay);
 
         try
@@ -469,6 +470,16 @@ internal sealed partial class CommentCreatedConsumer(
         await SettleAsync(() => channel.BasicNackAsync(delivery.DeliveryTag, multiple: false, requeue: true, CancellationToken.None))
             .ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// The back-off, or the server's <c>Retry-After</c> if that is longer (an earlier request would only be limited
+    /// again), but at most <see cref="ConsumerOptions.MaxRetryDelay"/>: the message waits unacked, which counts
+    /// towards the broker's <c>consumer_timeout</c>.
+    /// </summary>
+    internal static TimeSpan GetModelUnavailableDelay(TimeSpan backOff, TimeSpan? retryAfter) =>
+        retryAfter is { } requested && requested > backOff
+            ? (requested < ConsumerOptions.MaxRetryDelay ? requested : ConsumerOptions.MaxRetryDelay)
+            : backOff;
 
     /// <summary>
     /// Retries a failed message by republishing a copy with an incremented <c>x-retry-count</c> header and then

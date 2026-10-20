@@ -22,7 +22,8 @@ namespace CommentAnalysis.Infrastructure.Models.SystemOne;
 /// outside the options. They are validated anyway, and anything unexpected is a
 /// <see cref="SystemOneResponseException"/>. Failures that say nothing about the comment are a
 /// <see cref="ModelUnavailableException"/>: an unreachable server, another model (or another kind of server)
-/// answering, and a timeout or an error status (3xx/401/403/404/408/429/5xx) unless the server still lists the model.
+/// answering, a rejected API key (401), a rate limit or an overload (429/529, with the server's <c>Retry-After</c>),
+/// and a timeout or another error status (3xx/403/404/408/5xx) unless the server still lists the model.
 /// The last check keeps a comment that always fails (e.g. a 500 or a timeout on its long prompt) from waiting forever.
 /// Invalid requests are answered with 4xx (422 on the Basal server) and count as failures of the comment.
 /// </remarks>
@@ -38,6 +39,9 @@ public sealed class SystemOneDecisionModel : IDecisionModel
 
     /// <summary>How far the probabilities of an answer may sum from 1 (they are rounded floats).</summary>
     private const double ProbabilitySumTolerance = 1e-3;
+
+    /// <summary>TypeSafe's status for an overloaded service.</summary>
+    private const HttpStatusCode Overloaded = (HttpStatusCode)529;
 
     /// <summary>The output modality of a decision model in a llama.cpp model list.</summary>
     private const string DecisionsModality = "decisions";
@@ -115,7 +119,12 @@ public sealed class SystemOneDecisionModel : IDecisionModel
         }
         catch (ModelUnavailableException exception)
         {
-            MarkUnavailable(exception);
+            // A rate limit is the expected price of a busy key, not an outage: the comments wait, but readiness stays.
+            if (exception.InnerException is not HttpRequestException { StatusCode: HttpStatusCode.TooManyRequests })
+            {
+                MarkUnavailable(exception);
+            }
+
             throw;
         }
     }
@@ -208,8 +217,9 @@ public sealed class SystemOneDecisionModel : IDecisionModel
             && model.Architecture?.OutputModalities?.Contains(DecisionsModality, StringComparer.Ordinal) == true) == true;
 
     /// <summary>
-    /// Sends with the API key. An unreachable server is a <see cref="ModelUnavailableException"/>; a timeout and the
-    /// statuses of <see cref="IsSuspectedUnavailableStatus"/> are a <see cref="SuspectedUnavailabilityException"/>.
+    /// Sends with the API key. An unreachable server, a rejected key, a rate limit and an overload are a
+    /// <see cref="ModelUnavailableException"/>; a timeout and the statuses of <see cref="IsSuspectedUnavailableStatus"/>
+    /// are a <see cref="SuspectedUnavailabilityException"/>.
     /// </summary>
     private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
@@ -234,6 +244,27 @@ public sealed class SystemOneDecisionModel : IDecisionModel
             throw new SuspectedUnavailabilityException("The model server did not answer in time.", exception);
         }
 
+        if (response.StatusCode is HttpStatusCode.Unauthorized)
+        {
+            // Never the comment's fault, and the model list may not need the key, so the probe could not tell.
+            response.Dispose();
+            throw new ModelUnavailableException(
+                "The model server rejected the API key (401).", new HttpRequestException(null, null, response.StatusCode));
+        }
+
+        if (response.StatusCode is HttpStatusCode.TooManyRequests or Overloaded)
+        {
+            // The key's rate limit or the service's load (TypeSafe), not the comment: it waits as long as asked.
+            var retryAfter = GetRetryAfter(response);
+            response.Dispose();
+            throw new ModelUnavailableException(
+                $"The model server answered {(int)response.StatusCode} (rate limited or overloaded).",
+                new HttpRequestException(null, null, response.StatusCode))
+            {
+                RetryAfter = retryAfter,
+            };
+        }
+
         if (IsSuspectedUnavailableStatus(response.StatusCode))
         {
             response.Dispose();
@@ -251,14 +282,23 @@ public sealed class SystemOneDecisionModel : IDecisionModel
         return exception;
     }
 
+    /// <summary>The server's <c>Retry-After</c> (seconds or a date), or null if it has none.</summary>
+    private TimeSpan? GetRetryAfter(HttpResponseMessage response) => response.Headers.RetryAfter switch
+    {
+        { Delta: { } delta } => delta,
+        { Date: { } date } => TimeSpan.FromTicks(Math.Max((date - _timeProvider.GetUtcNow()).Ticks, 0)),
+        _ => null,
+    };
+
     /// <summary>
-    /// Statuses that usually say nothing about the comment: redirects (disabled), authorization (e.g. a wrong API key),
+    /// Statuses that usually say nothing about the comment: redirects (disabled), a forbidden request (usually access,
+    /// but a firewall may block one payload),
     /// a missing endpoint, and server errors (including 501, a model that is not a decision model). A server error
     /// can concern one comment, which the probe tells apart.
     /// </summary>
     private static bool IsSuspectedUnavailableStatus(HttpStatusCode status) =>
-        status is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden or HttpStatusCode.NotFound
-            or HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests
+        status is HttpStatusCode.Forbidden or HttpStatusCode.NotFound
+            or HttpStatusCode.RequestTimeout
         || (int)status is >= 300 and < 400 or >= 500;
 
     /// <summary>
