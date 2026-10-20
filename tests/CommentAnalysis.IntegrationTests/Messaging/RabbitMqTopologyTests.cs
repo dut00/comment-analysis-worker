@@ -65,29 +65,31 @@ public class RabbitMqTopologyTests(RabbitMqFixture rabbitMq)
             await WaitForMessageCountAsync(publisher, topology.InputQueue, expected: 1);
         }
 
-        // Simulate a poison message that crashes the consumer: the channel closes without an ack.
-        // (In RabbitMQ 4 an explicit nack/reject with requeue does NOT count towards the limit.)
-        await using var channel = await connection.CreateChannelAsync();
-        var deliveries = 0;
-        for (var attempt = 0; attempt <= deliveryLimit + 1; attempt++)
-        {
-            // Returning an unacked message to a quorum queue is asynchronous: wait until it is back
-            // in the input queue (or has been dead-lettered) before trying to get it again.
-            var available = await WaitUntilAsync(async () =>
-                await channel.MessageCountAsync(topology.InputQueue) > 0 ||
-                await channel.MessageCountAsync(topology.DeadLetterQueue) > 0);
-            if (!available || await channel.MessageCountAsync(topology.InputQueue) == 0)
-            {
-                break;
-            }
+        var deliveries = await CrashUntilDeadLetteredAsync(connection, topology, maxDeliveries: deliveryLimit + 2);
 
-            await using var consumer = await connection.CreateChannelAsync();
-            Assert.NotNull(await consumer.BasicGetAsync(topology.InputQueue, autoAck: false));
-            deliveries++;
+        // The limit counts failed deliveries that may be returned: the message is dead-lettered on crash limit + 1.
+        Assert.Equal(deliveryLimit + 1, deliveries);
+    }
+
+    [Theory]
+    [InlineData(1, 2)] // a policy can lower the declared limit,
+    [InlineData(5, 3)] // but not raise it: RabbitMQ applies the lower of the policy and the queue argument.
+    // (3 deliveries alone would also mean "policy not applied"; the first case shows that the policy pattern matches.)
+    public async Task DeliveryLimitPolicy_AppliesTheLowerOfPolicyAndArgument(int policyLimit, int expectedDeliveries)
+    {
+        var topology = RabbitMqFixture.CreateTopologySettings();
+        await using var messaging = await StartMessagingAsync(topology, ("RabbitMq:DeliveryLimit", "2"));
+        // Applied to the existing queue, as an operator would; the worker's declaration stays valid.
+        await rabbitMq.SetQueuePolicyAsync(topology.InputQueue, $$"""{"delivery-limit":{{policyLimit}}}""");
+
+        await using var connection = await rabbitMq.ConnectAsync();
+        await using (var publisher = await connection.CreateChannelAsync())
+        {
+            await PublishAsync(publisher, topology.Exchange, "comment.created");
+            await WaitForMessageCountAsync(publisher, topology.InputQueue, expected: 1);
         }
 
-        Assert.Equal(1u, await WaitForMessageCountAsync(channel, topology.DeadLetterQueue, expected: 1));
-        Assert.Equal(deliveryLimit + 1, deliveries);
+        Assert.Equal(expectedDeliveries, await CrashUntilDeadLetteredAsync(connection, topology, maxDeliveries: 8));
     }
 
     [Fact]
@@ -156,6 +158,36 @@ public class RabbitMqTopologyTests(RabbitMqFixture rabbitMq)
             await services.DisposeAsync();
             throw;
         }
+    }
+
+    /// <summary>
+    /// Simulates a poison message that crashes the consumer: gets the message and closes the channel without an ack,
+    /// until it is dead-lettered. Returns the number of deliveries. (In RabbitMQ 4 an explicit nack/reject with
+    /// requeue does NOT count towards the limit.)
+    /// </summary>
+    private static async Task<int> CrashUntilDeadLetteredAsync(IConnection connection, TopologySettings topology, int maxDeliveries)
+    {
+        await using var channel = await connection.CreateChannelAsync();
+        var deliveries = 0;
+        while (deliveries < maxDeliveries)
+        {
+            // Returning an unacked message to a quorum queue is asynchronous: wait until it is back
+            // in the input queue (or has been dead-lettered) before trying to get it again.
+            var available = await WaitUntilAsync(async () =>
+                await channel.MessageCountAsync(topology.InputQueue) > 0 ||
+                await channel.MessageCountAsync(topology.DeadLetterQueue) > 0);
+            if (!available || await channel.MessageCountAsync(topology.InputQueue) == 0)
+            {
+                break;
+            }
+
+            await using var consumer = await connection.CreateChannelAsync();
+            Assert.NotNull(await consumer.BasicGetAsync(topology.InputQueue, autoAck: false));
+            deliveries++;
+        }
+
+        Assert.Equal(1u, await WaitForMessageCountAsync(channel, topology.DeadLetterQueue, expected: 1));
+        return deliveries;
     }
 
     private static async Task PublishAsync(IChannel channel, string exchange, string routingKey) =>

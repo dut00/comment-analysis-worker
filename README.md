@@ -65,7 +65,7 @@ comment service ──CommentCreated──▶ exchange "comments" (topic, routin
 - A malformed message, or one larger than `Consumer:MaxMessageBytes`, goes straight to the dead-letter queue.
 - A processing error (e.g. an invalid model answer, the database down) is retried by republishing the message with an `x-retry-count` header – 1 s, 2 s, 3 s – and dead-lettered after `Consumer:MaxRetries` (3).
 - An **unavailable model** never uses up retries: the message returns to the queue after a back-off (1 s doubling to 30 s, or the server's `Retry-After` if longer, up to 30 s) and readiness reports the model. That covers an unreachable server, another model answering, a rejected key or an empty account (401/402), a gateway without a working provider (502/503), a rate limit or an overload (429/529), and a timeout or another error status that the server's model list confirms.
-- A worker crash leaves the message unacknowledged; RabbitMQ redelivers it, and dead-letters it after 5 crashes (the queue's delivery limit).
+- A worker crash leaves the message unacknowledged; RabbitMQ redelivers it and dead-letters it when it crashes a sixth time (the queue's delivery limit 5 lets a message be returned 5 times).
 - On shutdown the worker stops consuming, lets in-flight messages finish for up to `Host:ShutdownTimeout` (20 s), and leaves the rest to be redelivered.
 
 ## Quick start
@@ -227,7 +227,7 @@ JSON with camelCase names and enums as camelCase strings.
 
 `decision` is `approve`, `reject` or `manualReview`; `confidence` is null for a comment that was not sent to the model (too long). The review reasons and signals are stored in the database but not (yet) in the event.
 
-**Topology**, declared by the worker at startup (idempotently; readiness is unhealthy until it is done): the topic exchange `comments` (shared with the comment service), the quorum queue `comment-analysis.comment-created` (delivery limit 5, dead-lettering to the direct exchange `comment-analysis.dead-letter`) and the quorum dead-letter queue `comment-analysis.comment-created.dlq`. Queue arguments cannot change once a queue exists: after changing them locally run `docker compose down -v`, and in production use a RabbitMQ policy.
+**Topology**, declared by the worker at startup (idempotently; readiness is unhealthy until it is done): the topic exchange `comments` (shared with the comment service), the quorum queue `comment-analysis.comment-created` (delivery limit 5, dead-lettering to the direct exchange `comment-analysis.dead-letter`) and the quorum dead-letter queue `comment-analysis.comment-created.dlq`. Queue arguments cannot change once a queue exists: after changing them locally run `docker compose down -v`; in production see [RabbitMQ policies](#rabbitmq-policies).
 
 ## Configuration
 
@@ -261,7 +261,7 @@ Standard .NET configuration: `appsettings.json`, then environment variables (`Se
 | `AllowPlaintext` | false | allows `amqp://` outside Development – a private network only (compose sets it); logged as a warning at startup |
 | `Exchange`, `InputQueue`, `InputRoutingKey`, `OutputRoutingKey` | `comments`, `comment-analysis.comment-created`, `comment.created`, `comment.analyzed` | topology names |
 | `DeadLetterExchange`, `DeadLetterQueue` | `comment-analysis.dead-letter`, `comment-analysis.comment-created.dlq` | |
-| `DeliveryLimit` | 5 | crashes before RabbitMQ dead-letters a message (queue argument, fixed once the queue exists) |
+| `DeliveryLimit` | 5 | how many times a message may be returned after a crash; the next crash dead-letters it (queue argument, fixed once the queue exists; a policy can only lower it) |
 | `ClientName`, `MaxReconnectDelay` | `comment-analysis-worker`, `00:00:30` | |
 | **Outbox** | | |
 | `BatchSize`, `PollInterval`, `PublishTimeout` | 100, `00:00:01`, `00:00:10` | publishing |
@@ -326,11 +326,29 @@ Database__ConnectionString="$(cat /run/secrets/migrator-connection-string)" ./ef
 
 Without `--connection` or `Database__ConnectionString` the bundle falls back to the local compose database (`localhost:5433`), so always set one – with `SSL Mode=VerifyFull` like the worker's (the bundle does not enforce it, and it connects as the schema owner). It applies only the missing migrations (none on an up-to-date database) and takes a lock, so two runs cannot interfere. It can run with a user that may change the schema, while the worker's own user only needs to read, write and delete rows in its two tables. A migration's `Down` may lose data (e.g. dropping analyses made without the model), so roll back by deploying the previous version only after checking it.
 
-**RabbitMQ.** The worker declares its topology at every start (exchanges, queues, bindings – see [Messages](#messages)), even when it already exists, so its user needs the *configure* permission on `comments`, `comment-analysis.*` and the dead-letter queue, *write* on `comments` and on the default exchange (retries are republished straight to the input queue), and *read* on the input queue. Without configure the declaration fails, readiness stays unhealthy and nothing is consumed. Tune the queues with policies rather than arguments (to be documented in H4).
+**RabbitMQ.** The worker declares its topology at every start (exchanges, queues, bindings – see [Messages](#messages)), even when it already exists, so its user needs the *configure* permission on `comments`, `comment-analysis.*` and the dead-letter queue, *write* on `comments` and on the default exchange (retries are republished straight to the input queue), and *read* on the input queue. Without configure the declaration fails, readiness stays unhealthy and nothing is consumed.
+
+**RabbitMQ policies.** The worker declares its queues with fixed arguments, and redeclaring with different ones fails (`PRECONDITION_FAILED`), so tune queues that already exist with a policy: it applies to an existing queue and to the messages in it, and the worker's declaration stays valid. Checked on RabbitMQ 4.3.6 (the delivery limit also by an integration test):
+
+| Key | Policy vs the worker's argument | Use |
+|---|---|---|
+| `delivery-limit` | the lower value wins: a policy can lower the limit (5), never raise it | lower it to stop a crash loop sooner; to raise it, change `RabbitMq:DeliveryLimit` and recreate the queue (drain it first) |
+| `max-length`, `max-length-bytes` | the worker sets none | cap the input queue; with the worker's `reject-publish` the broker nacks publishes once the queue is over the cap (one message over, as quorum queues allow), so the comment service must use publisher confirms and retry. The worker's own retries are nacked too: it requeues the original uncounted and processes it again (another model call after the retry delay) until the queue is below the cap, so a comment that always fails cannot reach the DLQ meanwhile (metric `comment_analysis.messages.requeued`, reason `retry_publish_failed`) |
+| `overflow` | **the policy wins** | never set it: `drop-head` discards the oldest comments to the DLQ, and because at-least-once dead-lettering requires `reject-publish`, RabbitMQ falls back to at-most-once for every message dead-lettered from the queue (crashes, exhausted retries, malformed messages) |
+| `dead-letter-exchange` | the argument wins | – (the worker's DLX stays in use) |
+| `delivery-limit` on the DLQ | the DLQ has no argument, so RabbitMQ 4's implicit limit applies: a message is **dropped** on its 21st failed delivery (no dead-letter target) | set an explicit limit (or a dead-letter target) by policy before any tool replays the DLQ |
+
+The limit counts failed deliveries only (a channel or connection closed without an ack); a nack with requeue does not count. With limit *N* a message is delivered *N* + 1 times and dead-lettered on the last crash. For example, to dead-letter a message on its third crash (two redeliveries):
+
+```bash
+rabbitmqctl set_policy comment-analysis-input '^comment-analysis\.comment-created$' '{"delivery-limit":2}' --apply-to queues
+```
+
+A policy matches by a pattern, and only one policy (the highest priority) applies to a queue, so merge these keys into an existing policy that already matches the queue instead of adding a second one. An operator policy (`set_operator_policy`) applies on top of it; for numeric limits such as `max-length` and `delivery-limit` the lowest value wins.
 
 **Images** are pinned: the Dockerfile's base images to a patch version and digest (refresh the digests at least monthly and on every .NET patch release – a tag is also re-pushed with OS security fixes; the Dockerfile says how), compose and the integration tests to patch versions of PostgreSQL and RabbitMQ.
 
-**Not done yet (phase H4):** a way to verify the topology without declaring it, and documenting the RabbitMQ policies.
+**Not done yet (phase H4):** a way to verify the topology without declaring it.
 
 ## Development
 

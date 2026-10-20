@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.RegularExpressions;
 using RabbitMQ.Client;
 using Testcontainers.RabbitMq;
 
@@ -40,6 +41,17 @@ public sealed class RabbitMqFixture : IAsyncLifetime
         if (result.ExitCode != 0)
         {
             throw new InvalidOperationException($"close_all_connections failed: {result.Stderr}");
+        }
+    }
+
+    /// <summary>Applies a RabbitMQ policy to the queue with exactly this name, as an operator would.</summary>
+    public async Task SetQueuePolicyAsync(string queue, string definitionJson)
+    {
+        var result = await _container.ExecAsync(
+            ["rabbitmqctl", "set_policy", $"policy-{queue}", $"^{Regex.Escape(queue)}$", definitionJson, "--apply-to", "queues"]);
+        if (result.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"set_policy failed: {result.Stderr}");
         }
     }
 

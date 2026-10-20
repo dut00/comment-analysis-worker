@@ -37,9 +37,11 @@ public sealed class RabbitMqOptions
     /// connection closed without an ack, e.g. the worker crashed) before RabbitMQ dead-letters it. Protects
     /// against poison messages that crash the worker. In RabbitMQ 4 an explicit nack/reject with requeue does
     /// not count towards this limit, so retries of handled errors need their own mechanism.
+    /// With limit N a message is delivered N + 1 times and dead-lettered on the last crash.
     /// Declared as the queue's <c>x-delivery-limit</c>.
     /// Queue arguments are fixed once the queue exists: changing this value later requires recreating the
-    /// queue or overriding it with a RabbitMQ policy, otherwise declaration fails with PRECONDITION_FAILED.
+    /// queue, otherwise declaration fails with PRECONDITION_FAILED. A RabbitMQ policy can lower the limit
+    /// but not raise it (the lower of the two applies).
     /// </summary>
     public int DeliveryLimit { get; set; } = 5;
 
