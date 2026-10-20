@@ -5,6 +5,7 @@ using CommentAnalysis.Core.Analysis;
 using CommentAnalysis.Core.Messages;
 using CommentAnalysis.Core.Models;
 using CommentAnalysis.Infrastructure.Messaging;
+using CommentAnalysis.Worker.Diagnostics;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
@@ -37,6 +38,7 @@ internal sealed partial class CommentCreatedConsumer(
     IOptions<RabbitMqOptions> rabbitMqOptions,
     IOptions<ConsumerOptions> consumerOptions,
     TimeProvider timeProvider,
+    WorkerMetrics metrics,
     ILogger<CommentCreatedConsumer> logger) : BackgroundService
 {
     private static readonly Func<ILogger, Guid, IDisposable?> CommentScope =
@@ -365,6 +367,7 @@ internal sealed partial class CommentCreatedConsumer(
         if (delivery.Body.Length > _maxMessageBytes)
         {
             LogMessageTooLarge(logger, messageId, delivery.DeliveryTag, delivery.Body.Length, _maxMessageBytes);
+            metrics.DeadLettered(DeadLetterReason.TooLarge);
             await DeadLetterAsync(channel, delivery).ConfigureAwait(false);
             return;
         }
@@ -377,6 +380,7 @@ internal sealed partial class CommentCreatedConsumer(
         catch (JsonException exception)
         {
             LogMalformedMessage(logger, exception, messageId, delivery.DeliveryTag);
+            metrics.DeadLettered(DeadLetterReason.Malformed);
             await DeadLetterAsync(channel, delivery).ConfigureAwait(false);
             return;
         }
@@ -418,14 +422,23 @@ internal sealed partial class CommentCreatedConsumer(
         await SettleAsync(() => channel.BasicAckAsync(delivery.DeliveryTag, multiple: false, CancellationToken.None))
             .ConfigureAwait(false);
 
+        if (result.Analysis is { } analysis)
+        {
+            metrics.Analyzed(analysis);
+        }
+        else
+        {
+            metrics.Duplicate();
+        }
+
         if (result.Analysis is { Prediction: null })
         {
             // Not evaluated: the processor stored a manual review instead of occupying the model for too long.
             LogContentTooLong(logger, comment.Content.Length, _maxContentLength);
         }
-        else if (result.Analysis is { } analysis)
+        else if (result.Analysis is { } evaluated)
         {
-            LogAnalyzed(logger, analysis.Decision, analysis.Confidence, analysis.Model.Version, analysis.Duration.TotalMilliseconds);
+            LogAnalyzed(logger, evaluated.Decision, evaluated.Confidence, evaluated.Model.Version, evaluated.Duration.TotalMilliseconds);
         }
         else
         {
@@ -456,6 +469,7 @@ internal sealed partial class CommentCreatedConsumer(
 
         var delay = GetModelUnavailableDelay(TimeSpan.FromTicks(delayTicks), exception.RetryAfter);
         LogModelUnavailable(logger, exception, delay);
+        metrics.Requeued(RequeueReason.ModelUnavailable);
 
         try
         {
@@ -499,6 +513,7 @@ internal sealed partial class CommentCreatedConsumer(
         if (retryCount >= settings.MaxRetries)
         {
             LogRetriesExhausted(logger, exception, retryCount);
+            metrics.DeadLettered(DeadLetterReason.RetriesExhausted);
             await DeadLetterAsync(channel, delivery).ConfigureAwait(false);
             return;
         }
@@ -532,11 +547,13 @@ internal sealed partial class CommentCreatedConsumer(
         {
             // Not confirmed (or returned as unroutable): keep the original instead, uncounted.
             LogRetryPublishFailed(logger, publishException);
+            metrics.Requeued(RequeueReason.RetryPublishFailed);
             await SettleAsync(() => channel.BasicNackAsync(delivery.DeliveryTag, multiple: false, requeue: true, CancellationToken.None))
                 .ConfigureAwait(false);
             return;
         }
 
+        metrics.Retried();
         await SettleAsync(() => channel.BasicAckAsync(delivery.DeliveryTag, multiple: false, CancellationToken.None))
             .ConfigureAwait(false);
     }

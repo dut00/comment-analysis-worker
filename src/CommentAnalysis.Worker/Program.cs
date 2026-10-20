@@ -4,6 +4,7 @@ using CommentAnalysis.Infrastructure.Models;
 using CommentAnalysis.Infrastructure.Persistence;
 using CommentAnalysis.Worker;
 using CommentAnalysis.Worker.Consumers;
+using CommentAnalysis.Worker.Diagnostics;
 using CommentAnalysis.Worker.Outbox;
 using Microsoft.Extensions.Options;
 
@@ -19,6 +20,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<HostOptions>(builder.Configuration.GetSection("Host"));
 
 builder.Services.AddCommentAnalysis(builder.Configuration);
+builder.Services.AddSingleton<WorkerMetrics>();
 builder.Services.AddCommentAnalysisPersistence(builder.Configuration);
 builder.Services.AddCommentAnalysisMessaging(builder.Configuration);
 
@@ -36,6 +38,7 @@ builder.Services.AddOptions<OutboxOptions>()
     .ValidateOnStart();
 builder.Services.AddSingleton<IValidateOptions<OutboxOptions>, OutboxOptionsValidator>();
 builder.Services.AddHostedService<OutboxPublisher>();
+builder.Services.AddHostedService<OutboxLagMonitor>();
 
 builder.Services.AddHealthChecks()
     .AddDbContextCheck<AnalysisDbContext>("postgres", tags: [HealthCheckTags.Ready])

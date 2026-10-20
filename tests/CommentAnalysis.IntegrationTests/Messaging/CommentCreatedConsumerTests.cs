@@ -1,3 +1,4 @@
+using System.Diagnostics.Metrics;
 using System.Text;
 using CommentAnalysis.Core.Decisions;
 using CommentAnalysis.Core.Messages;
@@ -6,9 +7,11 @@ using CommentAnalysis.Infrastructure.Messaging;
 using CommentAnalysis.Infrastructure.Persistence;
 using CommentAnalysis.IntegrationTests.Infrastructure;
 using CommentAnalysis.Worker.Consumers;
+using CommentAnalysis.Worker.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Diagnostics.Metrics.Testing;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
 
@@ -215,6 +218,7 @@ public class CommentCreatedConsumerTests(PostgresFixture postgres, RabbitMqFixtu
 
         // No retries at all: a counted failure would dead-letter the message at once.
         await using var worker = await StartWorkerAsync(topology, model, ("Consumer:MaxRetries", "0"));
+        using var requeued = CollectMetric<long>(worker, "comment_analysis.messages.requeued");
         var comment = CreateComment();
 
         await PublishAsync(topology, MessageSerializer.Serialize(comment));
@@ -222,6 +226,35 @@ public class CommentCreatedConsumerTests(PostgresFixture postgres, RabbitMqFixtu
         await WaitForAnalysisAsync(comment.CommentId);
         Assert.Equal(3, model.Calls);
         await AssertQueuesAsync(topology, input: 0, deadLetter: 0);
+        Assert.Equal(2, requeued.GetMeasurementSnapshot().EvaluateAsCounter());
+        Assert.All(requeued.GetMeasurementSnapshot(), measurement => Assert.Equal("model_unavailable", measurement.Tags["comment_analysis.requeue_reason"]));
+    }
+
+    [Fact]
+    public async Task Metrics_CountDecisionsRetriesDuplicatesAndDeadLetters()
+    {
+        var topology = RabbitMqFixture.CreateTopologySettings();
+        var model = new FailingDecisionModel(failures: 1);
+        await using var worker = await StartWorkerAsync(topology, model, ("Consumer:RetryDelay", "00:00:00"));
+        using var analyzed = CollectMetric<long>(worker, "comment_analysis.comments.analyzed");
+        using var retried = CollectMetric<long>(worker, "comment_analysis.messages.retried");
+        using var duplicates = CollectMetric<long>(worker, "comment_analysis.comments.duplicates");
+        using var deadLettered = CollectMetric<long>(worker, "comment_analysis.messages.dead_lettered");
+        using var duration = CollectMetric<double>(worker, "comment_analysis.model.duration");
+        var comment = CreateComment();
+
+        await PublishAsync(topology, Encoding.UTF8.GetBytes("""{ "commentId": "not-a-guid" }"""));
+        await PublishAsync(topology, MessageSerializer.Serialize(comment));
+        await WaitForAnalysisAsync(comment.CommentId);
+        await PublishAsync(topology, MessageSerializer.Serialize(comment));
+        await duplicates.WaitForMeasurementsAsync(1).WaitAsync(Timeout);
+
+        var decision = Assert.Single(analyzed.GetMeasurementSnapshot());
+        Assert.Equal("Approve", decision.Tags["comment_analysis.decision"]);
+        Assert.Equal(model.Info.Version, decision.Tags["comment_analysis.model.version"]);
+        Assert.Single(duration.GetMeasurementSnapshot());
+        Assert.Equal(1, retried.GetMeasurementSnapshot().EvaluateAsCounter());
+        Assert.Equal("malformed", Assert.Single(deadLettered.GetMeasurementSnapshot()).Tags["comment_analysis.dead_letter_reason"]);
     }
 
     [Theory]
@@ -380,6 +413,10 @@ public class CommentCreatedConsumerTests(PostgresFixture postgres, RabbitMqFixtu
             throw;
         }
     }
+
+    private static MetricCollector<T> CollectMetric<T>(WorkerFactory worker, string instrument)
+        where T : struct =>
+        new(worker.Services.GetRequiredService<IMeterFactory>(), WorkerMetrics.MeterName, instrument);
 
     private async Task PublishAsync(TopologySettings topology, byte[] body, IDictionary<string, object?>? headers = null)
     {

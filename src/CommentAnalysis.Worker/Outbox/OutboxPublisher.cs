@@ -3,6 +3,7 @@ using System.Text;
 using CommentAnalysis.Core.Messages;
 using CommentAnalysis.Infrastructure.Messaging;
 using CommentAnalysis.Infrastructure.Persistence;
+using CommentAnalysis.Worker.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
@@ -34,6 +35,7 @@ internal sealed partial class OutboxPublisher(
     IOptions<RabbitMqOptions> rabbitMqOptions,
     IOptions<OutboxOptions> outboxOptions,
     TimeProvider timeProvider,
+    WorkerMetrics metrics,
     ILogger<OutboxPublisher> logger) : BackgroundService
 {
     private const int CleanupBatchSize = 1000;
@@ -53,7 +55,8 @@ internal sealed partial class OutboxPublisher(
         [CommentAnalyzed.MessageType] = rabbitMqOptions.Value.OutputRoutingKey,
     };
 
-    private readonly string[] _knownTypes = [CommentAnalyzed.MessageType];
+    /// <summary>The message types this version publishes; rows of other types are left for a version that can.</summary>
+    internal static readonly string[] KnownTypes = [CommentAnalyzed.MessageType];
 
     private IChannel? _channel;
     private DateTimeOffset _nextCleanup = DateTimeOffset.MinValue;
@@ -127,7 +130,7 @@ internal sealed partial class OutboxPublisher(
         var messages = await context.OutboxMessages
             .FromSql($"""
                 SELECT * FROM outbox_messages
-                WHERE published_at IS NULL AND type = ANY({_knownTypes})
+                WHERE published_at IS NULL AND type = ANY({KnownTypes})
                 ORDER BY created_at
                 LIMIT {settings.BatchSize}
                 FOR UPDATE SKIP LOCKED
@@ -187,6 +190,7 @@ internal sealed partial class OutboxPublisher(
             }
 
             LogPublished(logger, published);
+            metrics.OutboxPublished(published);
         }
 
         failure?.Throw();
@@ -249,7 +253,7 @@ internal sealed partial class OutboxPublisher(
 
         // Reported here, i.e. rarely, rather than on every poll.
         var unknown = await context.OutboxMessages
-            .CountAsync(m => m.PublishedAt == null && !_knownTypes.Contains(m.Type), stoppingToken)
+            .CountAsync(m => m.PublishedAt == null && !KnownTypes.Contains(m.Type), stoppingToken)
             .ConfigureAwait(false);
         if (unknown > 0)
         {

@@ -1,10 +1,13 @@
+using System.Diagnostics.Metrics;
 using CommentAnalysis.Core.Decisions;
 using CommentAnalysis.Core.Messages;
 using CommentAnalysis.Infrastructure.Messaging;
 using CommentAnalysis.Infrastructure.Persistence;
 using CommentAnalysis.IntegrationTests.Infrastructure;
+using CommentAnalysis.Worker.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Diagnostics.Metrics.Testing;
 using RabbitMQ.Client;
 
 namespace CommentAnalysis.IntegrationTests.Outbox;
@@ -19,6 +22,8 @@ public class OutboxPublisherTests(PostgresFixture postgres, RabbitMqFixture rabb
     {
         var topology = RabbitMqFixture.CreateTopologySettings();
         await using var worker = await StartWorkerAsync(topology, ("Model:Static:Label", "Acceptable"), ("Model:Static:Confidence", "0.91"));
+        using var published = new MetricCollector<long>(
+            worker.Services.GetRequiredService<IMeterFactory>(), WorkerMetrics.MeterName, "comment_analysis.outbox.published");
         await using var connection = await rabbitMq.ConnectAsync();
         await using var channel = await connection.CreateChannelAsync();
         var subscriber = await SubscribeAsync(channel, topology);
@@ -38,6 +43,47 @@ public class OutboxPublisherTests(PostgresFixture postgres, RabbitMqFixture rabb
         // The AMQP message id is the outbox row id, which is marked as published.
         var row = await WaitForPublishedAsync(Guid.Parse(delivery.BasicProperties.MessageId!));
         Assert.NotNull(row.PublishedAt);
+
+        // Other tests' rows in the shared database may be published by this worker too.
+        await published.WaitForMeasurementsAsync(1).WaitAsync(Timeout);
+        Assert.True(published.GetMeasurementSnapshot().EvaluateAsCounter() >= 1);
+    }
+
+    [Fact]
+    public async Task OutboxLag_IsReported_WhilePublishingIsStuck()
+    {
+        var oldest = DateTimeOffset.UtcNow.AddHours(-1);
+        var row = OutboxMessageEntity.Create(CommentAnalyzed.MessageType, new { id = Guid.NewGuid() }, oldest);
+        await using (var context = postgres.CreateContext())
+        {
+            context.OutboxMessages.Add(row);
+            await context.SaveChangesAsync();
+        }
+
+        try
+        {
+            // RabbitMQ on WorkerFactory's closed port: nothing is published, so the row keeps waiting.
+            await using var worker = new WorkerFactory(("Database:ConnectionString", postgres.ConnectionString));
+            using var lag = new MetricCollector<double>(
+                worker.Services.GetRequiredService<IMeterFactory>(), WorkerMetrics.MeterName, "comment_analysis.outbox.oldest_pending_age");
+
+            // Older rows of other tests can only make the reported lag larger.
+            var reported = 0.0;
+            using var timeout = new CancellationTokenSource(Timeout);
+            while (reported < (DateTimeOffset.UtcNow - oldest).TotalSeconds - 5 && !timeout.IsCancellationRequested)
+            {
+                await Task.Delay(100);
+                lag.RecordObservableInstruments();
+                reported = lag.LastMeasurement?.Value ?? 0;
+            }
+
+            Assert.InRange(reported, (DateTimeOffset.UtcNow - oldest).TotalSeconds - 5, double.MaxValue);
+        }
+        finally
+        {
+            await using var context = postgres.CreateContext();
+            await context.OutboxMessages.Where(m => m.Id == row.Id).ExecuteDeleteAsync();
+        }
     }
 
     [Fact]

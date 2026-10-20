@@ -270,8 +270,20 @@ The separate Jev client planned here is not needed: `SystemOneDecisionModel` alr
 
 ### Phase H – Production readiness
 
-**H1. Observability**
-- Metrics through `System.Diagnostics.Metrics`: decisions by type, inference duration, processing failures, outbox lag (age of the oldest unpublished row) and retries. Optional OpenTelemetry export (OTLP) behind config.
+**H1. Observability** – split in two
+
+**H1a. Metrics** `[x]`
+- `WorkerMetrics` (meter `CommentAnalysis.Worker`, created through `IMeterFactory`), with tags limited to fixed value sets (never comment data):
+  - `comment_analysis.comments.analyzed` (decision, model version), `comment_analysis.comments.review_reasons` (reason, model version), `comment_analysis.comments.duplicates` (also an evaluation that lost the insert race to another replica: its model time is not recorded);
+  - `comment_analysis.model.duration` (seconds, model version; only comments the model evaluated; buckets from 0.1 s to 300 s, for both the local model and a cloud one);
+  - `comment_analysis.messages.requeued` (uncounted: `model_unavailable`, `retry_publish_failed`), `comment_analysis.messages.retried` (counted retries), `comment_analysis.messages.dead_lettered` (`too_large`, `malformed`, `retries_exhausted`);
+  - `comment_analysis.outbox.published` and the gauge `comment_analysis.outbox.oldest_pending_age` (seconds; 0 when nothing waits, no value while the database cannot be checked). The gauge is fed by `OutboxLagMonitor`, a separate background service that queries the oldest unpublished row of a known type every 10 s (the partial index), because the publisher itself waits for RabbitMQ – exactly when the lag matters. Every replica reports the same value, so aggregate it with max.
+- The lag check logs its first failure as a warning (the gauge then has no value, so an alert on it would stay silent; alert rules should also treat a missing value) and repeats at Debug.
+- After the H1a review, deferred: a dead-letter, retry or analysis is counted even if settling the delivery then fails on a lost channel (the redelivery is counted again); exact counts would need `SettleAsync` to report the outcome. Rare, and only skews counters.
+- Tests: `WorkerMetricsTests` (tags, no duration for a comment not evaluated, the gauge's states) and end-to-end checks in the consumer and outbox tests (`MetricCollector` on the worker's `IMeterFactory`), including the lag while RabbitMQ is unreachable.
+
+**H1b. Export** `[ ]`
+- Optional OpenTelemetry export (OTLP) behind config, with the runtime, HTTP client and ASP.NET Core meters; a local viewer in compose for the manual check.
 
 **H2. Graceful shutdown and scaling**
 - Shutdown behaviour itself is implemented in D2; here verify it under load: `docker compose stop` during processing, and run compose with 2 worker replicas and confirm there are no duplicates and no lost events.
