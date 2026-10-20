@@ -20,6 +20,9 @@ internal sealed class WorkerFactory : WebApplicationFactory<Program>
         ["Database:ConnectionString"] = "Host=127.0.0.1;Port=1;Database=unused;Username=unused;Password=unused;Timeout=2",
         ["Database:MigrateOnStartup"] = "false",
         ["RabbitMq:Uri"] = "amqp://guest:guest@127.0.0.1:1/",
+        // Local test containers or closed ports; tests that run as Production would otherwise fail on TLS first.
+        ["Database:AllowPlaintext"] = "true",
+        ["RabbitMq:AllowPlaintext"] = "true",
         ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "",
         ["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"] = "",
     };

@@ -53,6 +53,9 @@ services:
       Database__ConnectionString: Host=postgres;Port=5432;Database=comment_analysis;Username=postgres;Password=postgres
       Database__MigrateOnStartup: "true"
       RabbitMq__Uri: amqp://guest:guest@rabbitmq:5672/
+      # The worker runs as Production and requires TLS to both; the compose network is private to this machine.
+      Database__AllowPlaintext: "true"
+      RabbitMq__AllowPlaintext: "true"
       # Metrics are exported only when an OTLP (gRPC) endpoint is set, e.g. the dashboard below:
       # WORKER_OTLP_ENDPOINT=http://aspire-dashboard:18889 docker compose --profile observability up -d
       # (not OTEL_EXPORTER_OTLP_ENDPOINT itself, which a shell may set for other applications).

@@ -4,8 +4,17 @@ public sealed class RabbitMqOptions
 {
     public const string SectionName = "RabbitMq";
 
-    /// <summary>AMQP URI including credentials and virtual host, e.g. <c>amqp://user:pass@host:5672/</c>.</summary>
+    /// <summary>
+    /// AMQP URI including credentials and virtual host, e.g. <c>amqps://user:pass@host:5671/vhost</c>. Outside
+    /// Development it must use TLS (<c>amqps</c>), unless <see cref="AllowPlaintext"/> is set.
+    /// </summary>
     public Uri? Uri { get; set; }
+
+    /// <summary>
+    /// Allows <c>amqp://</c> without TLS outside Development. Only for a broker on the same host or private network,
+    /// e.g. compose; never in production.
+    /// </summary>
+    public bool AllowPlaintext { get; set; }
 
     /// <summary>Shown in the RabbitMQ management UI to identify the connection.</summary>
     public string ClientName { get; set; } = "comment-analysis-worker";

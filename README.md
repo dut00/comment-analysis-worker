@@ -253,10 +253,12 @@ Standard .NET configuration: `appsettings.json`, then environment variables (`Se
 | `MaxContentLength` | 1000 | longer comments go to manual review (`TooLong`) without the model |
 | `MaxRetries`, `RetryDelay` | 3, `00:00:01` | retries of a failed message (linear, at most 30 s each) before the DLQ |
 | **Database** | | |
-| `ConnectionString` | – (required) | Npgsql connection string; outside local development with `SSL Mode=VerifyFull` |
+| `ConnectionString` | – (required) | Npgsql connection string; outside Development it must have `SSL Mode=VerifyFull`, or the worker does not start |
+| `AllowPlaintext` | false | allows any `SSL Mode` other than `VerifyFull` (also `Disable`) outside Development – a private network only (compose sets it); logged as a warning at startup |
 | `MigrateOnStartup` | false | apply migrations at startup; for development and compose only |
 | **RabbitMq** | | |
-| `Uri` | – (required) | `amqps://user:password@host:5671/vhost` (TLS; `amqp://…:5672` only locally) |
+| `Uri` | – (required) | `amqps://user:password@host:5671/vhost`; outside Development `amqp://` stops the start |
+| `AllowPlaintext` | false | allows `amqp://` outside Development – a private network only (compose sets it); logged as a warning at startup |
 | `Exchange`, `InputQueue`, `InputRoutingKey`, `OutputRoutingKey` | `comments`, `comment-analysis.comment-created`, `comment.created`, `comment.analyzed` | topology names |
 | `DeadLetterExchange`, `DeadLetterQueue` | `comment-analysis.dead-letter`, `comment-analysis.comment-created.dlq` | |
 | `DeliveryLimit` | 5 | crashes before RabbitMQ dead-letters a message (queue argument, fixed once the queue exists) |
@@ -309,7 +311,7 @@ Results of the H2 runs (stopping and killing replicas under load, with the stati
 **Image.** `src/CommentAnalysis.Worker/Dockerfile` builds a non-root image listening on port 7461 (health checks only; the worker serves no other HTTP). Give it:
 
 - `Model__Provider`, the `Model__SystemOne__*` settings and the API key from a secret store;
-- `Database__ConnectionString` and `RabbitMq__Uri`, also from a secret store, both with TLS: `Host=…;Database=comment_analysis;Username=…;Password=…;SSL Mode=VerifyFull` (plus `Root Certificate=…` for a private CA) and `amqps://user:password@host:5671/vhost`;
+- `Database__ConnectionString` and `RabbitMq__Uri`, also from a secret store, both with TLS – the worker refuses to start without it outside Development: `Host=…;Database=comment_analysis;Username=…;Password=…;SSL Mode=VerifyFull` (plus `Root Certificate=…` for a private CA) and `amqps://user:password@host:5671/vhost`;
 - a termination grace period above `Host:ShutdownTimeout` plus about 20 s for closing the connections (compose uses 45 s).
 
 **Database migrations.** Leave `Database:MigrateOnStartup` off and apply migrations before deploying a new version, with an EF Core migration bundle – a single executable that needs no SDK on the target. Build it for the host that runs it (here a linux-x64 deploy job or container, so it does not run on the Windows machine that built it):
@@ -322,11 +324,11 @@ dotnet ef migrations bundle --project src/CommentAnalysis.Infrastructure --start
 Database__ConnectionString="$(cat /run/secrets/migrator-connection-string)" ./efbundle
 ```
 
-Without `--connection` or `Database__ConnectionString` the bundle falls back to the local compose database (`localhost:5433`), so always set one. It applies only the missing migrations (none on an up-to-date database) and takes a lock, so two runs cannot interfere. It can run with a user that may change the schema, while the worker's own user only needs to read, write and delete rows in its two tables. A migration's `Down` may lose data (e.g. dropping analyses made without the model), so roll back by deploying the previous version only after checking it.
+Without `--connection` or `Database__ConnectionString` the bundle falls back to the local compose database (`localhost:5433`), so always set one – with `SSL Mode=VerifyFull` like the worker's (the bundle does not enforce it, and it connects as the schema owner). It applies only the missing migrations (none on an up-to-date database) and takes a lock, so two runs cannot interfere. It can run with a user that may change the schema, while the worker's own user only needs to read, write and delete rows in its two tables. A migration's `Down` may lose data (e.g. dropping analyses made without the model), so roll back by deploying the previous version only after checking it.
 
 **RabbitMQ.** The worker declares its topology at every start (exchanges, queues, bindings – see [Messages](#messages)), even when it already exists, so its user needs the *configure* permission on `comments`, `comment-analysis.*` and the dead-letter queue, *write* on `comments` and on the default exchange (retries are republished straight to the input queue), and *read* on the input queue. Without configure the declaration fails, readiness stays unhealthy and nothing is consumed. Tune the queues with policies rather than arguments (to be documented in H4).
 
-**Not done yet (phase H4):** enforcing TLS for RabbitMQ and PostgreSQL outside Development (it works today, but nothing stops a plaintext URI), pinning image versions, a way to verify the topology without declaring it, and documenting the RabbitMQ policies.
+**Not done yet (phase H4):** pinning image versions, a way to verify the topology without declaring it, and documenting the RabbitMQ policies.
 
 ## Development
 

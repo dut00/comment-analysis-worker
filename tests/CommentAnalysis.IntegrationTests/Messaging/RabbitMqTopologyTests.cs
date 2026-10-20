@@ -5,6 +5,8 @@ using CommentAnalysis.Infrastructure.Messaging;
 using CommentAnalysis.IntegrationTests.Infrastructure;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Hosting.Internal;
 using RabbitMQ.Client;
 
 namespace CommentAnalysis.IntegrationTests.Messaging;
@@ -131,8 +133,10 @@ public class RabbitMqTopologyTests(RabbitMqFixture rabbitMq)
             .AddInMemoryCollection(rabbitMq.WorkerSettings(topology).Concat(settings)
                 .Select(setting => KeyValuePair.Create(setting.Key, setting.Value)))
             .Build();
+        // The validators need the host's environment; the test containers are plaintext, as in Development.
         var services = new ServiceCollection()
             .AddLogging()
+            .AddSingleton<IHostEnvironment>(new HostingEnvironment { EnvironmentName = Environments.Development })
             .AddCommentAnalysisMessaging(configuration)
             .BuildServiceProvider();
 

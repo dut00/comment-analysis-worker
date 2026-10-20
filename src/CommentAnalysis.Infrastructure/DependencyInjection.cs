@@ -59,7 +59,8 @@ public static partial class DependencyInjection
 
     /// <summary>
     /// Registers the PostgreSQL database (EF Core) and, when enabled, migrations at startup.
-    /// Call before registering message consumers so migrations run first.
+    /// Call before registering message consumers so migrations run first. Needs the host's
+    /// <see cref="IHostEnvironment"/>: outside Development the connection must use verified TLS.
     /// </summary>
     public static IServiceCollection AddCommentAnalysisPersistence(this IServiceCollection services, IConfiguration configuration)
     {
@@ -70,6 +71,7 @@ public static partial class DependencyInjection
             .Bind(configuration.GetSection(DatabaseOptions.SectionName))
             .ValidateOnStart();
         services.AddSingleton<IValidateOptions<DatabaseOptions>, DatabaseOptionsValidator>();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, PlaintextConnectionWarning>());
 
         services.AddDbContext<AnalysisDbContext>((serviceProvider, builder) =>
             builder.UseAnalysisDatabase(serviceProvider.GetRequiredService<IOptions<DatabaseOptions>>().Value.ConnectionString));
@@ -82,7 +84,8 @@ public static partial class DependencyInjection
 
     /// <summary>
     /// Registers the RabbitMQ connections (consumer, and the keyed publisher one) and the background topology declaration.
-    /// The host starts even when RabbitMQ is unavailable; see <see cref="RabbitMqTopologyInitializer"/>.
+    /// The host starts even when RabbitMQ is unavailable; see <see cref="RabbitMqTopologyInitializer"/>. Needs the host's
+    /// <see cref="IHostEnvironment"/>: outside Development the connection must use TLS.
     /// </summary>
     public static IServiceCollection AddCommentAnalysisMessaging(this IServiceCollection services, IConfiguration configuration)
     {
@@ -93,6 +96,7 @@ public static partial class DependencyInjection
             .Bind(configuration.GetSection(RabbitMqOptions.SectionName))
             .ValidateOnStart();
         services.AddSingleton<IValidateOptions<RabbitMqOptions>, RabbitMqOptionsValidator>();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, PlaintextConnectionWarning>());
 
         services.TryAddSingleton(TimeProvider.System);
         services.AddSingleton(serviceProvider => CreateConnection(serviceProvider, RabbitMqConnection.ConsumerName));

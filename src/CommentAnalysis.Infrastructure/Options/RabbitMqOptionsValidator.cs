@@ -1,9 +1,11 @@
 using CommentAnalysis.Infrastructure.Messaging;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 
 namespace CommentAnalysis.Infrastructure.Options;
 
-internal sealed class RabbitMqOptionsValidator : IValidateOptions<RabbitMqOptions>
+/// <summary>Validates the RabbitMQ settings; outside Development the URI must use TLS (<c>amqps</c>).</summary>
+internal sealed class RabbitMqOptionsValidator(IHostEnvironment environment) : IValidateOptions<RabbitMqOptions>
 {
     public ValidateOptionsResult Validate(string? name, RabbitMqOptions options)
     {
@@ -17,6 +19,10 @@ internal sealed class RabbitMqOptionsValidator : IValidateOptions<RabbitMqOption
         else if (options.Uri.Scheme is not ("amqp" or "amqps"))
         {
             errors.Add($"{section}:Uri must use the amqp or amqps scheme, but was '{options.Uri.Scheme}'.");
+        }
+        else if (options.Uri.Scheme == "amqp" && !options.AllowPlaintext && !environment.IsDevelopment())
+        {
+            errors.Add($"{section}:Uri must use amqps outside Development (or set {section}:AllowPlaintext for a broker on a private network).");
         }
 
         AddErrorIfBlank(errors, nameof(options.ClientName), options.ClientName);
