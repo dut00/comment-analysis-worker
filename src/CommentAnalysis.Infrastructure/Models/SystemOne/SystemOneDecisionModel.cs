@@ -22,8 +22,9 @@ namespace CommentAnalysis.Infrastructure.Models.SystemOne;
 /// outside the options. They are validated anyway, and anything unexpected is a
 /// <see cref="SystemOneResponseException"/>. Failures that say nothing about the comment are a
 /// <see cref="ModelUnavailableException"/>: an unreachable server, another model (or another kind of server)
-/// answering, a rejected API key (401), a rate limit or an overload (429/529, with the server's <c>Retry-After</c>),
-/// and a timeout or another error status (3xx/403/404/408/5xx) unless the server still lists the model.
+/// answering, a rejected account (401, or 402 for no credits), a gateway without a working upstream or a server
+/// that is not ready (502/503), a rate limit or an overload (429/529, with the server's <c>Retry-After</c>), and a
+/// timeout or another error status (3xx/403/404/408/500/504 and other 5xx) unless the server still lists the model.
 /// The last check keeps a comment that always fails (e.g. a 500 or a timeout on its long prompt) from waiting forever.
 /// Invalid requests are answered with 4xx (422 on the Basal server) and count as failures of the comment.
 /// </remarks>
@@ -57,6 +58,7 @@ public sealed class SystemOneDecisionModel : IDecisionModel
     private readonly TimeProvider _timeProvider;
     private readonly Uri _systemOneUri;
     private readonly Uri _modelsUri;
+    private readonly Uri _modelEndpointsUri;
 
     private volatile Unavailability? _lastUnavailability;
 
@@ -74,6 +76,10 @@ public sealed class SystemOneDecisionModel : IDecisionModel
         var baseUrl = options.BaseUrl.AbsoluteUri.EndsWith('/') ? options.BaseUrl : new Uri(options.BaseUrl.AbsoluteUri + "/");
         _systemOneUri = new Uri(baseUrl, "systemone");
         _modelsUri = new Uri(baseUrl, "models");
+
+        // OpenRouter's model ids contain a slash ("typesafe/jev-1.14-…"), which stays a path separator.
+        _modelEndpointsUri = new Uri(
+            baseUrl, $"models/{string.Join('/', options.Model.Split('/').Select(Uri.EscapeDataString))}/endpoints");
 
         Info = new ModelInfo(options.Model, CreateVersion(options));
     }
@@ -179,13 +185,26 @@ public sealed class SystemOneDecisionModel : IDecisionModel
         }
     }
 
-    /// <summary>Checks that the server lists the configured model; returns the problem, or null if there is none.</summary>
+    /// <summary>
+    /// Checks that the server serves the configured model as a decision model, either in its model list or, for
+    /// OpenRouter, whose list has only text models, in the model's description; returns the problem, or null if
+    /// there is none.
+    /// </summary>
+    /// <remarks>
+    /// A model id with a slash (OpenRouter's <c>typesafe/jev-…</c>) is looked up by its description first: OpenRouter's
+    /// list of hundreds of models is close to the 1 MB response limit and slow to download within the probe timeout.
+    /// </remarks>
     private async Task<(string? Problem, Exception? Exception)> ProbeAsync(CancellationToken cancellationToken)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(ProbeTimeout);
         try
         {
+            if (_options.Model.Contains('/', StringComparison.Ordinal) && await DescribesDecisionModelAsync(timeout.Token).ConfigureAwait(false))
+            {
+                return (null, null);
+            }
+
             using var request = new HttpRequestMessage(HttpMethod.Get, _modelsUri);
             using var response = await SendAsync(request, timeout.Token).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
@@ -204,6 +223,35 @@ public sealed class SystemOneDecisionModel : IDecisionModel
             || (exception is OperationCanceledException && !cancellationToken.IsCancellationRequested))
         {
             return ("The model server is unavailable.", exception);
+        }
+    }
+
+    /// <summary>
+    /// OpenRouter's <c>GET models/{id}/endpoints</c>: the model reports the <c>decisions</c> output modality and at
+    /// least one of its providers is up (<c>status</c> 0; OpenRouter marks degraded or down providers below 0). Any
+    /// failure means no (other servers answer 404).
+    /// </summary>
+    private async Task<bool> DescribesDecisionModelAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, _modelEndpointsUri);
+            using var response = await SendAsync(request, cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return false;
+            }
+
+            var description = await response.Content
+                .ReadFromJsonAsync<ModelDescription>(JsonSerializerOptions.Web, cancellationToken)
+                .ConfigureAwait(false);
+            return description?.Data is { Endpoints: { } endpoints } model
+                && model.Architecture?.OutputModalities?.Contains(DecisionsModality, StringComparer.Ordinal) == true
+                && endpoints.Any(endpoint => endpoint.Status is null or >= 0);
+        }
+        catch (Exception exception) when (exception is ModelUnavailableException or SuspectedUnavailabilityException or JsonException)
+        {
+            return false;
         }
     }
 
@@ -244,12 +292,27 @@ public sealed class SystemOneDecisionModel : IDecisionModel
             throw new SuspectedUnavailabilityException("The model server did not answer in time.", exception);
         }
 
-        if (response.StatusCode is HttpStatusCode.Unauthorized)
+        if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.PaymentRequired)
         {
-            // Never the comment's fault, and the model list may not need the key, so the probe could not tell.
+            // A wrong key or no credits (OpenRouter's 402): never the comment's fault, and the model list may not
+            // need the key, so the probe could not tell.
             response.Dispose();
             throw new ModelUnavailableException(
-                "The model server rejected the API key (401).", new HttpRequestException(null, null, response.StatusCode));
+                response.StatusCode is HttpStatusCode.Unauthorized
+                    ? "The model server rejected the API key (401)."
+                    : "The model server's account has no credits (402).",
+                new HttpRequestException(null, null, response.StatusCode));
+        }
+
+        if (response.StatusCode is HttpStatusCode.BadGateway or HttpStatusCode.ServiceUnavailable)
+        {
+            // A gateway without a working upstream (OpenRouter's provider is down) or a server that is not ready
+            // (llama.cpp loading the model): not the comment. The probe could not tell, because OpenRouter's
+            // catalogue still lists the model. 500 and 504 stay probed: they can be caused by one comment.
+            response.Dispose();
+            throw new ModelUnavailableException(
+                $"The model server answered {(int)response.StatusCode} (no working upstream, or not ready).",
+                new HttpRequestException(null, null, response.StatusCode));
         }
 
         if (response.StatusCode is HttpStatusCode.TooManyRequests or Overloaded)
@@ -438,6 +501,13 @@ public sealed class SystemOneDecisionModel : IDecisionModel
 
     private sealed record ModelArchitecture(
         [property: JsonPropertyName("output_modalities")] IReadOnlyList<string>? OutputModalities);
+
+    /// <summary>OpenRouter's description of one model (<c>GET models/{id}/endpoints</c>).</summary>
+    private sealed record ModelDescription(DescribedModel? Data);
+
+    private sealed record DescribedModel(ModelArchitecture? Architecture, IReadOnlyList<ModelEndpoint>? Endpoints);
+
+    private sealed record ModelEndpoint(int? Status);
 
     private sealed record Unavailability(DateTimeOffset At, string Reason);
 

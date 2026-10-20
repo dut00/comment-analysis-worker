@@ -5,6 +5,8 @@
 **/*.user
 **/launchSettings.json
 .git/
+# Local secrets (API keys) must never reach an image.
+**/.env
 .gitignore
 .gitattributes
 .dockerignore

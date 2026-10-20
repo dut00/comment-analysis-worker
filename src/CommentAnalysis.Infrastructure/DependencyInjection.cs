@@ -42,7 +42,9 @@ public static partial class DependencyInjection
             {
                 client.Timeout = serviceProvider.GetRequiredService<IOptions<ModelOptions>>().Value.SystemOne.Timeout;
 
-                // The answers take about 2 KB; a misbehaving server must not fill the worker's memory.
+                // The answers take about 2 KB and the model lists the probe reads less than 1 MB (OpenRouter's whole list
+                // is about 800 KB, which is why the probe asks OpenRouter for the model's description instead); a
+                // misbehaving server must not fill the worker's memory.
                 client.MaxResponseContentBufferSize = 1024 * 1024;
             })
             // A redirect would silently turn the POST into a GET to another location.

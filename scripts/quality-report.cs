@@ -5,6 +5,8 @@
 //
 //   dotnet run scripts/quality-report.cs -- <comments.json> <results.json> <report.md> [base-url] [model] [version]
 //
+// The API key, if the server needs one, comes from the SYSTEMONE_API_KEY environment variable.
+//
 // Evaluates every comment without a successful result in <results.json> (so an interrupted run resumes and failures are
 // retried), saves each prediction
 // as soon as it arrives, then writes a Markdown report: the decisions at the default policy, label accuracy,
@@ -32,6 +34,8 @@ var model = new SystemOneDecisionModel(new LongTimeoutFactory(), new SystemOneMo
     BaseUrl = new Uri(args.Length > 3 ? args[3] : "http://localhost:1234/v1/"),
     Model = args.Length > 4 ? args[4] : "basal-2.0-mini",
     Version = args.Length > 5 ? args[5] : "2.0",
+    // Never an argument, so it stays out of the shell history and process list.
+    ApiKey = Environment.GetEnvironmentVariable("SYSTEMONE_API_KEY"),
 });
 
 // Results of another model version (e.g. after the questions changed) are evaluated again.
@@ -72,7 +76,7 @@ foreach (var sample in samples.Where(sample => results.All(result => result.Id !
 
     results.Add(result);
     File.WriteAllText(resultsPath, JsonSerializer.Serialize(results, json).ReplaceLineEndings("\n"));
-    Console.WriteLine(FormattableString.Invariant($"{sample.Id}: {result.Label} {result.Confidence:F3} in {result.Seconds:F0} s {result.Error}"));
+    Console.WriteLine(FormattableString.Invariant($"{sample.Id}: {result.Label} {result.Confidence:F3} in {result.Seconds:F1} s {result.Error}"));
 }
 
 File.WriteAllText(args[2], Report(samples, results).ReplaceLineEndings("\n"));
@@ -106,7 +110,7 @@ static string Report(IReadOnlyList<Sample> samples, IReadOnlyList<Result> result
     if (evaluated.Count > 0)
     {
         var seconds = evaluated.Select(row => row.Result.Seconds).Order().ToList();
-        report.AppendLine(CultureInfo.InvariantCulture, $"- Latency: median {seconds[seconds.Count / 2]:F0} s, max {seconds[^1]:F0} s, total {seconds.Sum() / 60:F0} min.");
+        report.AppendLine(CultureInfo.InvariantCulture, $"- Latency: median {seconds[seconds.Count / 2]:F1} s, max {seconds[^1]:F1} s, total {seconds.Sum() / 60:F1} min.");
     }
 
     report.AppendLine();
@@ -129,13 +133,13 @@ static string Report(IReadOnlyList<Sample> samples, IReadOnlyList<Result> result
     {
         if (result.Error is not null)
         {
-            report.AppendLine(CultureInfo.InvariantCulture, $"| {sample.Id} | {sample.Category} | {sample.Expected} | **failed: {result.Error}** | | | | | | | {result.Seconds:F0} |");
+            report.AppendLine(CultureInfo.InvariantCulture, $"| {sample.Id} | {sample.Category} | {sample.Expected} | **failed: {result.Error}** | | | | | | | {result.Seconds:F1} |");
             continue;
         }
 
         var decision = Decide(result, defaults);
         var mark = Matches(sample.Expected, decision.Decision) ? string.Empty : " ✗";
-        report.AppendLine(CultureInfo.InvariantCulture, $"| {sample.Id} | {sample.Category} | {sample.Expected} | {decision.Decision}{mark} | {string.Join(", ", decision.ReviewReasons)} | {result.Label} | {result.Confidence:F4} | {result.Toxicity:F2} | {result.Spam:F2} | {result.PersonalData:F2} | {result.Seconds:F0} |");
+        report.AppendLine(CultureInfo.InvariantCulture, $"| {sample.Id} | {sample.Category} | {sample.Expected} | {decision.Decision}{mark} | {string.Join(", ", decision.ReviewReasons)} | {result.Label} | {result.Confidence:F4} | {result.Toxicity:F2} | {result.Spam:F2} | {result.PersonalData:F2} | {result.Seconds:F1} |");
     }
 
     report.AppendLine();

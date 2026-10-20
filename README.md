@@ -32,23 +32,28 @@ basal-serve --model "C:\Users\Kuba\.lmstudio\models\Remek\basal-2.0-mini-GGUF" -
 - Expect about 11 s per short comment (four questions), about 19 s for 2500 characters and about 52 s for 10 000 (the eager mode without `--mode gguf` was 7–20 times slower). The server handles one request at a time and finishes a request even after the client gave up, so Development and compose prefetch one message. Comments over `Consumer:MaxContentLength` (1000 characters; comments are expected to have at most 280) go to manual review without the model.
 - Without the model, set `Model__Provider: Static` in compose (or `Model:Provider` in Development settings).
 
-### TypeSafe's cloud (Jev)
+### TypeSafe's Jev through OpenRouter
 
-The same client can query TypeSafe's cloud model Jev. This has not been checked against the live service yet (no API key; see phase G2 in the plan). Configure:
+The same client queries TypeSafe's cloud model Jev through OpenRouter (checked live, phase G2; quality report in `docs/quality/jev-1.14-report.md`). Put the key in `.env` (git-ignored) as `OPENROUTER_API_KEY=…` and configure the worker, e.g. in a compose override:
 
 ```yaml
-Model__Provider: SystemOne
-Model__SystemOne__BaseUrl: https://api.typesafe.ai/v1/
-Model__SystemOne__Model: jev-1.13.0   # a version, not an alias: responses name the version, so jev-latest would never match
-Model__SystemOne__Version: "1.13.0"   # mirrors the model's version; part of the stored model version
-Model__SystemOne__Timeout: "00:00:30"
-Model__SystemOne__ApiKey: ${TYPESAFE_API_KEY}   # from the environment or a secret store; never commit it
+services:
+  worker:
+    environment:
+      Model__SystemOne__BaseUrl: https://openrouter.ai/api/v1/
+      Model__SystemOne__Model: typesafe/jev-1.14-20261014   # the dated snapshot the responses name; typesafe/jev-1.14 would never match
+      Model__SystemOne__Version: "1.14-20261014"            # mirrors the snapshot; part of the stored model version
+      Model__SystemOne__Timeout: "00:00:30"
+      Model__SystemOne__ApiKey: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in .env}
 ```
 
-- The key is sent as `Authorization: Bearer`. A wrong key (401) makes the comments wait and readiness unhealthy. No key at all is answered with 403, which the worker treats as unavailable only if the model list fails too (expected, not verified).
-- A rate limit (429) or an overload (529) makes the comments wait without using up their retries; the worker honours `Retry-After` up to 30 s. An overload also makes readiness unhealthy for a minute; a rate limit does not.
-- Each comment costs four questions' worth of input tokens. With the cloud, `Consumer:Prefetch` and `Consumer:Concurrency` can go back up (the local server's one-at-a-time limit does not apply), within the rate limit.
-- Changing the model (e.g. to `jev-1.14.0`) changes the stored model version, so later analyses can be told apart.
+- A comment takes about 0.3–0.9 s and costs about $0.00002. With the cloud, `Consumer:Prefetch` and `Consumer:Concurrency` can go back up (the local server's one-at-a-time limit does not apply), within the rate limit.
+- Readiness checks that OpenRouter describes the model as a decision model (`GET models/{id}/endpoints`). That needs no key, so a wrong key (401) or an empty account (402) is noticed by the first comment: comments then wait without using up their retries, and readiness turns unhealthy.
+- When OpenRouter's provider is down (502/503) comments wait as well, instead of being blamed and dead-lettered.
+- A rate limit (429) or an overload (529) also makes comments wait; the worker honours `Retry-After` up to 30 s. An overload makes readiness unhealthy for a minute; a rate limit does not.
+- A new snapshot (e.g. `jev-1.15-…`) changes the stored model version, so later analyses can be told apart.
+- TypeSafe's own API (`https://api.typesafe.ai/v1/`, model e.g. `jev-1.14.0`) uses the same contract but has not been checked.
+- To rerun the quality report: `SYSTEMONE_API_KEY=… dotnet run scripts/quality-report.cs -- tests/data/polish-comments.json docs/quality/jev-1.14-results.json docs/quality/jev-1.14-report.md https://openrouter.ai/api/v1/ typesafe/jev-1.14-20261014 1.14-20261014`.
 
 ## Metrics
 

@@ -16,6 +16,20 @@ public class SystemOneDecisionModelTests
     /// <summary>The Basal server's model list.</summary>
     private const string BasalModels = """{"models":[{"name":"basal-2.0-mini","mode":"eager"}]}""";
 
+    /// <summary>OpenRouter's description of Jev, trimmed.</summary>
+    private const string JevDescription =
+        """{"data":{"id":"typesafe/jev-1.14","architecture":{"output_modalities":["decisions"]},"endpoints":[{"name":"TypeSafe | typesafe/jev-1.14-20261014","status":0}]}}""";
+
+    /// <summary>OpenRouter's model list: text models only.</summary>
+    private const string OpenRouterModels = """{"data":[{"id":"typesafe/jev-router","architecture":{"output_modalities":["text"]}}]}""";
+
+    private static readonly Action<SystemOneModelOptions> JevOnOpenRouter = options =>
+    {
+        options.BaseUrl = new Uri("https://openrouter.ai/api/v1/");
+        options.Model = "typesafe/jev-1.14-20261014";
+        options.Version = "1.14-20261014";
+    };
+
     [Fact]
     public async Task SendsTheCommentWithTheFourQuestions()
     {
@@ -289,6 +303,78 @@ public class SystemOneDecisionModelTests
     }
 
     [Fact]
+    public async Task NoCredits_MeansTheModelIsUnavailable()
+    {
+        // OpenRouter answers 402 when the account has no credits: every comment would fail the same way.
+        var handler = new StubHandler("""{"error":{"message":"Insufficient credits","code":402}}""", HttpStatusCode.PaymentRequired) { ModelsResponse = BasalModels };
+
+        var exception = await Assert.ThrowsAsync<ModelUnavailableException>(() => CreateModel(handler).EvaluateAsync(Comment, CancellationToken.None));
+
+        Assert.Equal(HttpStatusCode.PaymentRequired, Assert.IsType<HttpRequestException>(exception.InnerException).StatusCode);
+    }
+
+    [Fact]
+    public async Task Health_IsHealthy_WhenOpenRouterDescribesTheModelAsADecisionModel()
+    {
+        // OpenRouter's model list has only text models; the decision model is described by its endpoints.
+        var handler = new StubHandler("{}") { ModelsResponse = OpenRouterModels, EndpointsResponse = JevDescription };
+
+        var result = await CreateModel(handler, JevOnOpenRouter).CheckHealthAsync(CancellationToken.None);
+
+        Assert.Equal(HealthStatus.Healthy, result.Status);
+
+        // Only the description: OpenRouter's whole model list is large.
+        Assert.Equal(new Uri("https://openrouter.ai/api/v1/models/typesafe/jev-1.14-20261014/endpoints"), Assert.Single(handler.Requests).Uri);
+    }
+
+    [Theory]
+    [InlineData("""{"data":{"architecture":{"output_modalities":["text"]},"endpoints":[{"status":0}]}}""", HttpStatusCode.OK)]
+    [InlineData("""{"data":{"architecture":{"output_modalities":["decisions"]},"endpoints":[]}}""", HttpStatusCode.OK)]
+    [InlineData("""{"data":{"architecture":{"output_modalities":["decisions"]},"endpoints":[{"status":-2}]}}""", HttpStatusCode.OK)]
+    [InlineData("""{"error":{"message":"Not Found","code":404}}""", HttpStatusCode.NotFound)]
+    public async Task Health_IsUnhealthy_WhenOpenRouterDoesNotServeTheDecisionModel(string description, HttpStatusCode status)
+    {
+        var handler = new StubHandler("{}") { ModelsResponse = OpenRouterModels, EndpointsResponse = description, EndpointsStatus = status };
+
+        var result = await CreateModel(handler, JevOnOpenRouter).CheckHealthAsync(CancellationToken.None);
+
+        Assert.Equal(HealthStatus.Unhealthy, result.Status);
+    }
+
+    [Fact]
+    public async Task ServerError_OnOpenRouter_IsAFailureOfTheComment_WhileTheModelIsServed()
+    {
+        var handler = new StubHandler("""{"error":{"code":500}}""", HttpStatusCode.InternalServerError) { EndpointsResponse = JevDescription };
+
+        await Assert.ThrowsAsync<SystemOneResponseException>(() => CreateModel(handler, JevOnOpenRouter).EvaluateAsync(Comment, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ServerError_OnOpenRouter_MeansTheModelIsUnavailable_WhenItsProvidersAreDown()
+    {
+        var handler = new StubHandler("""{"error":{"code":500}}""", HttpStatusCode.InternalServerError)
+        {
+            ModelsResponse = OpenRouterModels,
+            EndpointsResponse = """{"data":{"architecture":{"output_modalities":["decisions"]},"endpoints":[{"status":-5}]}}""",
+        };
+
+        await Assert.ThrowsAsync<ModelUnavailableException>(() => CreateModel(handler, JevOnOpenRouter).EvaluateAsync(Comment, CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.BadGateway)]
+    [InlineData(HttpStatusCode.ServiceUnavailable)]
+    public async Task NoWorkingUpstream_MeansTheModelIsUnavailable_EvenIfTheModelIsListed(HttpStatusCode status)
+    {
+        // OpenRouter answers 502/503 when its provider is down, while its catalogue still describes the model.
+        var handler = new StubHandler("""{"error":{"message":"Provider returned error"}}""", status) { EndpointsResponse = JevDescription };
+
+        var exception = await Assert.ThrowsAsync<ModelUnavailableException>(() => CreateModel(handler, JevOnOpenRouter).EvaluateAsync(Comment, CancellationToken.None));
+
+        Assert.Equal(status, Assert.IsType<HttpRequestException>(exception.InnerException).StatusCode);
+    }
+
+    [Fact]
     public async Task Health_StaysHealthy_AfterARateLimit()
     {
         // Throttling is expected under load; it must not take every replica out of readiness.
@@ -331,7 +417,7 @@ public class SystemOneDecisionModelTests
     [Theory]
     [InlineData(HttpStatusCode.Forbidden)]
     [InlineData(HttpStatusCode.InternalServerError)]
-    [InlineData(HttpStatusCode.ServiceUnavailable)]
+    [InlineData(HttpStatusCode.GatewayTimeout)]
     public async Task ErrorStatus_WhileTheServerListsTheModel_IsAFailureOfTheComment(HttpStatusCode status)
     {
         // E.g. a server error caused by this comment: counted retries, then the DLQ – not an endless wait.
@@ -581,6 +667,11 @@ public class SystemOneDecisionModelTests
         /// <summary>The <c>Retry-After</c> header of the response (not of the model list).</summary>
         public RetryConditionHeaderValue? RetryAfter { get; init; }
 
+        /// <summary>OpenRouter's model description (<c>GET models/{id}/endpoints</c>), answered with <see cref="EndpointsStatus"/> if set.</summary>
+        public string? EndpointsResponse { get; init; }
+
+        public HttpStatusCode EndpointsStatus { get; init; } = HttpStatusCode.OK;
+
         /// <summary>The model list, answered with 200 regardless of the other settings.</summary>
         public string? ModelsResponse { get; init; }
 
@@ -597,6 +688,11 @@ public class SystemOneDecisionModelTests
             if (ModelsResponse is not null && request.RequestUri!.AbsolutePath.EndsWith("/models", StringComparison.Ordinal))
             {
                 return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(ModelsResponse, Encoding.UTF8, "application/json") };
+            }
+
+            if (EndpointsResponse is not null && request.RequestUri!.AbsolutePath.EndsWith("/endpoints", StringComparison.Ordinal))
+            {
+                return new HttpResponseMessage(EndpointsStatus) { Content = new StringContent(EndpointsResponse, Encoding.UTF8, "application/json") };
             }
 
             if (_exception is not null)
